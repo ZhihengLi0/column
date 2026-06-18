@@ -100,6 +100,16 @@ if ($LASTEXITCODE -ne 0) {
 }
 Log "Connected to Raspberry Pi OK"
 
+# Test local CS2 database connection (show errors so we can debug)
+$env:PGPASSWORD = $LocalPass
+$localTest = & $psql -h $LocalHost -p $LocalPort -U $LocalUser -d $LocalDB -t -A -c "SELECT COUNT(*) FROM double_value_change_events;" 2>&1
+if ($LASTEXITCODE -ne 0) {
+    Log "ERROR: Cannot connect to local CS2 database. Details: $localTest"
+    Log "Check: is PostgreSQL running? Is the password correct? Is the database named 'cs2'?"
+    exit 1
+}
+Log "Local CS2 database OK - $localTest rows in double_value_change_events"
+
 $state = LoadState
 $total = 0
 
