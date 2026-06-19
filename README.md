@@ -436,6 +436,58 @@ Compare with the current time. Each sync cycle pushes up to 5000 rows per table,
 
 ---
 
+## Slack interaction
+
+### Acknowledging an alert
+
+React to any alert message with ✅ 👏 👍 🤙, or reply `ok` / `OK` in the alert thread.
+That sensor will be silenced for **10 minutes**.
+
+### Commands
+
+Mention `@BlueFors-Alert` followed by a command in any channel message:
+
+| Command | Description |
+|---|---|
+| `help` | Show all available commands |
+| `list` | Show sensor numbers, short names, and current thresholds |
+| `status` | Show active overrides and silenced sensors |
+| `ack` | Silence ALL sensors for 10 minutes |
+| `change <sensor> to <value> for 5min` | Temporary 5-minute threshold override |
+| `change <sensor> to <value> for 10min` | Temporary 10-minute threshold override |
+| `change <sensor> to <value> for ever` | Permanent threshold change |
+| `reset <sensor>` | Restore factory default threshold |
+
+### Sensor identifiers
+
+The `<sensor>` field accepts a number, short name, or full mapping name:
+
+| # | Short name | Full name | Unit | Default alert |
+|---|---|---|---|---|
+| 1 | MXC | MXC_TEMPERATURE | K | > 0.030 K |
+| 2 | MXCFAR | MXC_TEMPERATURE_FAR | K | > 0.050 K |
+| 3 | STILL | STILL_TEMPERATURE | K | > 2.0 K |
+| 4 | 4K | 4K_TEMPERATURE | K | > 6.0 K |
+| 5 | 50K | 50K_TEMPERATURE | K | > 65.0 K |
+| 6 | B1A | B1A_TEMPERATURE | K | > 1.0 K |
+| 7 | B2 | B2_TEMPERATURE | K | > 4.5 K |
+| 8 | P1 | P1_PRESSURE | mbar | > 20.0 mbar |
+| 9 | P2 | P2_PRESSURE | mbar | > 0.5 mbar |
+| 10 | P5 | P5_PRESSURE | mbar | > 1e-3 mbar |
+| 11 | FLOW | FLOW_VALUE | mmol/s | < 0.01 mmol/s |
+
+### Examples
+
+```
+@BlueFors-Alert list
+@BlueFors-Alert change 1 to 0.05 for 5min
+@BlueFors-Alert change MXC to 0.04 for ever
+@BlueFors-Alert reset STILL
+@BlueFors-Alert ack
+```
+
+---
+
 ## File reference
 
 | File | Location | Description |
