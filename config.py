@@ -15,8 +15,9 @@ LOCAL_PG_PASSWORD = "cs2monitor"
 LOCAL_PG_DB = "cs2"
 
 # ── Slack ─────────────────────────────────────────────────────────────────
-SLACK_BOT_TOKEN = ""   # Set your Slack Bot Token here (xoxb-...)
-SLACK_CHANNEL = ""    # Channel name or ID, e.g. "#bluefors-alerts"
+SLACK_BOT_TOKEN   = "YOUR_SLACK_BOT_TOKEN"
+SLACK_CHANNEL     = "C0B42G4AU0N"
+SLACK_BOT_USER_ID = "U0BBGRB0HC4"   # @BlueFors-Alert user ID
 
 # ── Sync settings ──────────────────────────────────────────────────────────
 SYNC_BATCH_SIZE = 5000   # Max rows pulled per table per sync cycle
