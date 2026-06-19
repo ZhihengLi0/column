@@ -138,11 +138,10 @@ foreach ($tbl in $tables) {
     $lines = @($copyOut | Where-Object { $_ -and $_ -ne "" })
     if ($lines.Count -eq 0) { continue }
 
-    # Import to Raspberry Pi (stderr suppressed)
+    # Import to Raspberry Pi
     $env:PGPASSWORD = $RemotePass
-    $lines | & $psql -h $RemoteHost -p $RemotePort -U $RemoteUser -d $RemoteDB `
-        -c "\copy public.$tbl FROM stdin WITH CSV ON CONFLICT (id) DO NOTHING" `
-        2>$null | Out-Null
+    $importErr = $lines | & $psql -h $RemoteHost -p $RemotePort -U $RemoteUser -d $RemoteDB `
+        -c "\copy public.$tbl FROM stdin WITH CSV ON CONFLICT (id) DO NOTHING" 2>&1
 
     if ($LASTEXITCODE -eq 0) {
         # Get the max id actually in this batch (subquery avoids upper-bound range bug with sparse IDs)
@@ -155,7 +154,7 @@ foreach ($tbl in $tables) {
             Log "  $tbl : +$($lines.Count) rows (last id: $newId)"
         }
     } else {
-        Log "  $tbl : import failed"
+        Log "  $tbl : import failed - $importErr"
     }
 }
 
