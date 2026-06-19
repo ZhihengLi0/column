@@ -10,7 +10,7 @@ param([switch]$Install)
 
 # --- Configuration ---
 $LocalHost  = "localhost"
-$LocalPort  = 5432
+$LocalPort  = 5434
 $LocalUser  = "postgres"
 $LocalPass  = "postgres"
 $LocalDB    = "cs2"
