@@ -139,8 +139,9 @@ if ($LASTEXITCODE -ne 0) {
 Log "Local CS2 database OK - $localTest rows in double_value_change_events"
 
 # Load or initialise state
+# If state file missing OR empty (no tables tracked yet), init from Raspberry Pi
 $state = LoadState
-if ($null -eq $state) {
+if ($null -eq $state -or $state.Count -eq 0) {
     $state = InitStateFromRemote
     SaveState $state
 }
