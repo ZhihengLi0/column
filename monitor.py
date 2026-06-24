@@ -362,10 +362,11 @@ def _execute_command(text: str, reply_ts: str, state: dict):
                        color="good", thread_ts=reply_ts)
             log.info("Mode override cleared — back to auto")
         elif val in MODES:
-            state["mode_override"] = val
-            state["current_mode"]  = val
-            state["mode_since"]    = datetime.now().isoformat()
+            state["mode_override"]   = val
+            state["current_mode"]    = val
+            state["mode_since"]      = datetime.now().isoformat()
             state["last_alert_time"] = {}
+            state["acked_sensors"]   = {}
             emoji = MODE_EMOJI[val]
             send_slack(f"✅ Mode manually set to *{val}*. {emoji}\n{MODE_DESC[val]}",
                        color="good", thread_ts=reply_ts)
@@ -394,8 +395,9 @@ def _execute_command(text: str, reply_ts: str, state: dict):
                        thread_ts=reply_ts)
             return
         state.setdefault("threshold_overrides", {}).pop(sensor, None)
-        all_t = {**config.THRESHOLDS_COLD, **config.THRESHOLDS_IDLE}
-        entry = all_t.get(sensor, (None, None, ""))
+        mode_t = active_thresholds(state)
+        all_t  = {**config.THRESHOLDS_COLD, **config.THRESHOLDS_IDLE}
+        entry  = mode_t.get(sensor) or all_t.get(sensor, (None, None, ""))
         default_val = entry[0] if entry[0] is not None else entry[1]
         send_slack(f"✅ *{sensor}* reset to default: `{default_val} {UNITS.get(sensor, '')}`",
                    color="good", thread_ts=reply_ts)
