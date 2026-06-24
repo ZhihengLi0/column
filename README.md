@@ -9,18 +9,19 @@ Data is synced every minute from the Windows CS2 PC to a Raspberry Pi, which run
 
 1. [Architecture](#architecture)
 2. [Network](#network)
-3. [Raspberry Pi Setup](#raspberry-pi-setup)
-4. [Database Backup Restore](#database-backup-restore)
-5. [Windows Sync Script — sync_push.ps1](#windows-sync-script--sync_pushps1)
-6. [Monitor Script — monitor.py](#monitor-script--monitorpy)
-7. [Configuration — config.py](#configuration--configpy)
-8. [Slack App Setup](#slack-app-setup)
-9. [Starting the System](#starting-the-system)
-10. [Slack Interaction](#slack-interaction)
-11. [Database Schema](#database-schema)
-12. [Sensor Mappings](#sensor-mappings)
-13. [Troubleshooting](#troubleshooting)
-14. [File Reference](#file-reference)
+3. [Operating Modes](#operating-modes)
+4. [Raspberry Pi Setup](#raspberry-pi-setup)
+5. [Database Backup Restore](#database-backup-restore)
+6. [Windows Sync Script — sync_push.ps1](#windows-sync-script--sync_pushps1)
+7. [Monitor Script — monitor.py](#monitor-script--monitorpy)
+8. [Configuration — config.py](#configuration--configpy)
+9. [Slack App Setup](#slack-app-setup)
+10. [Starting the System](#starting-the-system)
+11. [Slack Interaction](#slack-interaction)
+12. [Database Schema](#database-schema)
+13. [Sensor Mappings](#sensor-mappings)
+14. [Troubleshooting](#troubleshooting)
+15. [File Reference](#file-reference)
 
 **Appendix**
 - [A — CS2 System & Database Background](#appendix-a--cs2-system--database-background)
@@ -56,6 +57,85 @@ The Windows machine can reach the Pi on port 5432. So the PowerShell script runs
 |---|---|---|---|
 | BlueFors CS2 PC | 172.31.255.10 | Windows | Data source (CS2 + PostgreSQL 14.9 on port 5434) |
 | Raspberry Pi | 172.31.255.62 | Raspberry Pi OS 64-bit | Monitor hub (PostgreSQL 17 on port 5432) |
+
+---
+
+## Operating Modes
+
+The fridge is not always running. To avoid sending meaningless alerts while the system is at room temperature or in the middle of a cool-down, the monitor automatically detects which state the fridge is in and applies a different set of checks for each.
+
+### The three modes
+
+```
+50K plate temperature
+        │
+        ├─ > 200 K ──────────────────► IDLE          (room temperature, fridge not running)
+        │
+        ├─ between 80 K and 200 K ───► TRANSITIONING (cooling down or warming up)
+        │
+        └─ < 80 K ───────────────────► COLD          (fridge operational at base temperature)
+```
+
+| Mode | Emoji | Trigger | What is monitored |
+|---|---|---|---|
+| **IDLE** | ⚪ | 50K plate > 200 K | Idle pressure checks + CS2 system alerts |
+| **TRANSITIONING** | 🔵 | 50K plate between 80 K and 200 K | CS2 system alerts only — all threshold alerts suppressed |
+| **COLD** | 🟢 | 50K plate < 80 K | Full sensor threshold monitoring |
+
+### Why TRANSITIONING suppresses alerts
+
+During cool-down and warm-up the temperatures and pressures pass through a huge range of values. Without suppression, the monitor would send hundreds of threshold alerts as sensors cross their limits on the way to base temperature. TRANSITIONING mode keeps Slack quiet and only forwards genuine CS2 system errors.
+
+### Mode change notifications
+
+Every time the mode changes, the monitor sends a Slack message:
+
+```
+🔵 Mode changed: IDLE → TRANSITIONING
+System is cooling down or warming up.
+Threshold alerts suppressed — only CS2 system alerts forwarded.
+```
+
+### Manual mode override via Slack
+
+If the auto-detection is wrong (e.g. a sensor gives a bad reading), anyone in the Slack channel can override the mode manually:
+
+```
+@BlueFors-Alert set mode idle          force IDLE mode
+@BlueFors-Alert set mode cold          force COLD mode
+@BlueFors-Alert set mode auto          return to automatic detection
+@BlueFors-Alert mode                   show current mode and what is being monitored
+```
+
+### IDLE mode thresholds (room temperature)
+
+These are the checks applied when the fridge is sitting at room temperature and not running.  
+Only pressures are checked — temperatures are expected to be near room temperature and are not alerted.
+
+| Sensor | Alert condition | Why |
+|---|---|---|
+| P2_PRESSURE | > 10 mbar | Unexpectedly high still pressure at rest |
+| P5_PRESSURE | > 0.1 mbar | Unexpectedly high MXC pressure at rest |
+
+### COLD mode thresholds (operational)
+
+These are applied when the 50K plate is below 80 K, meaning the fridge has cooled significantly and is approaching or at base temperature.
+
+| Sensor | Alert condition | Description |
+|---|---|---|
+| MXC_TEMPERATURE | > 30 mK | Mixing chamber too warm |
+| MXC_TEMPERATURE_FAR | > 50 mK | MXC far-end too warm |
+| STILL_TEMPERATURE | > 2 K | Still too warm |
+| 4K_TEMPERATURE | > 6 K | 4K plate too warm |
+| 50K_TEMPERATURE | > 65 K | 50K plate too warm |
+| B1A_TEMPERATURE | > 1 K | B1A stage too warm |
+| B2_TEMPERATURE | > 4.5 K | B2 stage too warm |
+| P1_PRESSURE | > 20 mbar | Return line pressure too high |
+| P2_PRESSURE | > 0.5 mbar | Still pressure too high |
+| P5_PRESSURE | > 1e-3 mbar | MXC pressure too high |
+| FLOW_VALUE | < 0.01 mmol/s | Helium flow too low |
+
+> All thresholds can be adjusted at any time via Slack commands without restarting anything — see [Slack Interaction](#slack-interaction).
 
 ---
 
@@ -454,18 +534,22 @@ Each run does the following in order:
 
 | Step | Function | What it does |
 |---|---|---|
-| 1 | `check_acknowledgements()` | Polls Slack for reactions (✅ 👏 👍 🤙) or thread replies (`ok`/`OK`) on previous alert messages; silences that sensor for 10 min if found |
-| 2 | `check_commands()` | Reads new `@BlueFors-Alert` mentions in the channel; parses and executes threshold-change or ack commands |
-| 3 | `check_data_freshness()` | Queries `MAX(time)` from `double_value_change_events`; fires an alert if data is more than 5 minutes old (with 30-min cooldown to avoid spam) |
-| 4 | `check_sensor_thresholds()` | For each sensor in `THRESHOLDS`: fetches latest value, compares to limit, sends alert if exceeded and cooldown has passed |
-| 5 | `check_cs2_alerts()` | Fetches new rows from the `alerts` table with `severity >= CS2_ALERT_MIN_SEVERITY`; batches by error code and forwards to Slack |
-| 6 | Send + track | Sends all queued Slack messages; saves each message's `ts` (timestamp) so reactions on it can be checked next run |
-| 7 | `save_state()` | Writes `monitor_state.json` — persists last alert times, last CS2 alert ID, acknowledgements, threshold overrides |
+| 1 | `update_mode()` | Reads `50K_TEMPERATURE`, determines current mode (IDLE / TRANSITIONING / COLD). If the mode changed since the last run, sends a Slack notification and clears all sensor cooldowns so the new mode's thresholds apply immediately |
+| 2 | `check_acknowledgements()` | Polls Slack for reactions (✅ 👏 👍 🤙) or thread replies (`ok`/`OK`) on previous alert messages; silences that sensor for 10 min if found |
+| 3 | `check_commands()` | Reads new `@BlueFors-Alert` mentions in the channel; parses and executes threshold-change, ack, or mode-switch commands |
+| 4 | `check_data_freshness()` | Queries `MAX(time)` from `double_value_change_events`; fires an alert if data is more than 5 minutes old (with 30-min cooldown to avoid spam) |
+| 5 | `check_sensor_thresholds()` | Selects the correct threshold set based on mode: IDLE → `THRESHOLDS_IDLE`, COLD → `THRESHOLDS_COLD`, TRANSITIONING → skips entirely. For each sensor, fetches the latest value and sends an alert if the limit is exceeded and cooldown has passed |
+| 6 | `check_cs2_alerts()` | Fetches new rows from the `alerts` table with `severity >= CS2_ALERT_MIN_SEVERITY`; batches by error code and forwards to Slack |
+| 7 | Send + track | Sends all queued Slack messages; saves each message's `ts` (timestamp) so reactions on it can be checked next run |
+| 8 | `save_state()` | Writes `monitor_state.json` — persists mode, last alert times, last CS2 alert ID, acknowledgements, threshold overrides |
 
 ### State file (monitor_state.json)
 
 ```json
 {
+  "current_mode": "COLD",
+  "mode_since": "2026-06-18T10:00:00",
+  "mode_override": null,
   "last_alert_time": {
     "MXC_TEMPERATURE": "2026-06-18T14:23:00"
   },
@@ -484,34 +568,61 @@ Each run does the following in order:
 }
 ```
 
+Key fields:
+
+| Field | Description |
+|---|---|
+| `current_mode` | Active mode: `"IDLE"`, `"TRANSITIONING"`, or `"COLD"` |
+| `mode_since` | When the current mode started |
+| `mode_override` | `null` = auto; `"IDLE"` or `"COLD"` = manually locked via Slack |
+| `last_alert_time` | Timestamp of last alert per sensor (controls 30-min cooldown) |
+| `acked_sensors` | Sensors silenced until this time (via Slack reaction or `ok` reply) |
+| `pending_alert_msgs` | Slack `ts` of each outstanding alert (needed to check for reactions) |
+| `threshold_overrides` | Temporary or permanent threshold changes set via Slack commands |
+
 ---
 
 ## Configuration — config.py
 
 Located at `/home/cdms/bluefors_monitor/config.py` on the Raspberry Pi.  
-**Not committed to GitHub** (contains credentials).
+**Not committed to GitHub** (contains Slack token and database password — never push this file).
 
 ```python
 # BlueFors Monitor Configuration
 
-# Local PostgreSQL (Raspberry Pi)
+# ── Local PostgreSQL (Raspberry Pi) ───────────────────────────────────────────
 LOCAL_PG_HOST     = "localhost"
 LOCAL_PG_PORT     = 5432
 LOCAL_PG_USER     = "postgres"
 LOCAL_PG_PASSWORD = "cs2monitor"
 LOCAL_PG_DB       = "cs2"
 
-# Slack
+# ── Slack ─────────────────────────────────────────────────────────────────────
 SLACK_BOT_TOKEN   = "xoxb-..."          # from api.slack.com/apps → OAuth & Permissions
 SLACK_CHANNEL     = "C0B42G4AU0N"       # channel ID (not name)
 SLACK_BOT_USER_ID = "U0BBGRB0HC4"       # bot user ID — used to detect @mentions
 
-# Sync batch size (rows per table per cycle)
-SYNC_BATCH_SIZE = 5000
+# ── Operating mode detection ───────────────────────────────────────────────────
+# 50K_TEMPERATURE is used to decide which threshold set to apply:
+#   > MODE_IDLE_ABOVE_K    →  IDLE        (room temperature, fridge not running)
+#   < MODE_COLD_BELOW_K    →  COLD        (operational)
+#   between the two        →  TRANSITIONING (cooling/warming — threshold alerts suppressed)
+MODE_DETECTION_SENSOR = "50K_TEMPERATURE"
+MODE_IDLE_ABOVE_K     = 200.0
+MODE_COLD_BELOW_K     = 80.0
 
-# Alert thresholds: (max_value, min_value, description)
-# Set max_value=None for a lower-bound check, min_value=None for an upper-bound check
-THRESHOLDS = {
+# ── Thresholds: IDLE mode ──────────────────────────────────────────────────────
+# Only pressures monitored — temperatures near room temperature are expected.
+THRESHOLDS_IDLE = {
+    # sensor mapping    : (max_value, min_value, description)
+    "P2_PRESSURE":  (10.0,  None, "P2 pressure unusually high at room temperature"),
+    "P5_PRESSURE":  (0.1,   None, "P5 pressure unusually high at room temperature"),
+}
+
+# ── Thresholds: COLD mode ──────────────────────────────────────────────────────
+# Applied when 50K_TEMPERATURE < 80 K (fridge is cold and operational).
+THRESHOLDS_COLD = {
+    # sensor mapping          : (max_value, min_value, description)
     "MXC_TEMPERATURE":     (0.030,  None,  "MXC temperature > 30 mK"),
     "MXC_TEMPERATURE_FAR": (0.050,  None,  "MXC far-end temperature > 50 mK"),
     "STILL_TEMPERATURE":   (2.0,    None,  "Still temperature > 2 K"),
@@ -525,15 +636,14 @@ THRESHOLDS = {
     "FLOW_VALUE":          (None,   0.01,  "He flow < 0.01 mmol/s"),
 }
 
-# How long before the same sensor can alert again (minutes)
-ALERT_COOLDOWN_MINUTES = 30
-
-# Minimum CS2 alert severity to forward: 1 = warning, 2 = error
-CS2_ALERT_MIN_SEVERITY = 2
+# ── Alert behaviour ────────────────────────────────────────────────────────────
+ALERT_COOLDOWN_MINUTES = 30     # minutes before same sensor can alert again
+CS2_ALERT_MIN_SEVERITY = 2      # 1 = warning, 2 = error only
+SYNC_BATCH_SIZE        = 5000   # rows per table per sync cycle (Windows side)
 ```
 
-To change a threshold permanently, edit this file and restart the cron job.  
-To change it temporarily via Slack, use the `change` command (see [Slack Interaction](#slack-interaction)).
+**To change a threshold permanently:** edit this file and the next cron run picks it up automatically (no restart needed).  
+**To change a threshold temporarily:** use the `change` Slack command (see [Slack Interaction](#slack-interaction)).
 
 ---
 
@@ -658,20 +768,46 @@ The monitor checks for these each minute and silences that sensor for 10 minutes
 
 Mention `@BlueFors-Alert` in the channel followed by a command:
 
+#### Information
+
 | Command | Description |
 |---|---|
 | `help` | Show all available commands |
 | `list` | Show all sensors with numbers, short names, and current thresholds |
-| `status` | Show active threshold overrides and silenced sensors |
+| `status` | Show current mode, active threshold overrides, and silenced sensors |
+| `mode` | Show current operating mode and what is being monitored |
+
+#### Acknowledgement
+
+| Command | Description |
+|---|---|
 | `ack` | Silence ALL sensors for 10 minutes |
+
+#### Mode control
+
+| Command | Description |
+|---|---|
+| `set mode auto` | Return to automatic mode detection (based on 50K temperature) |
+| `set mode idle` | Force IDLE mode (only pressure checks) |
+| `set mode cold` | Force COLD mode (full threshold monitoring) |
+
+> Use `set mode` when the auto-detection seems wrong (e.g. a bad sensor reading holds the system in the wrong mode).
+
+#### Threshold changes
+
+| Command | Description |
+|---|---|
 | `change <sensor> to <value> for 5min` | Temporary 5-minute threshold override |
 | `change <sensor> to <value> for 10min` | Temporary 10-minute threshold override |
 | `change <sensor> to <value> for ever` | Permanent threshold change (until `reset`) |
 | `reset <sensor>` | Restore factory default threshold |
 
-The `<sensor>` field accepts a number, short name, or full mapping name interchangeably.
+The `<sensor>` field accepts a number, short name, or full mapping name interchangeably.  
+Threshold changes apply to whichever mode's thresholds contain that sensor.
 
 ### Sensor identifiers
+
+#### COLD mode sensors
 
 | # | Short name | Full mapping name | Unit | Default alert condition |
 |---|---|---|---|---|
@@ -687,12 +823,22 @@ The `<sensor>` field accepts a number, short name, or full mapping name intercha
 | 10 | P5 | P5_PRESSURE | mbar | > 1e-3 mbar |
 | 11 | FLOW | FLOW_VALUE | mmol/s | < 0.01 mmol/s |
 
+#### IDLE mode sensors
+
+| # | Short name | Full mapping name | Unit | Default alert condition |
+|---|---|---|---|---|
+| 9 | P2 | P2_PRESSURE | mbar | > 10.0 mbar |
+| 10 | P5 | P5_PRESSURE | mbar | > 0.1 mbar |
+
 ### Examples
 
 ```
 @BlueFors-Alert list
 @BlueFors-Alert status
+@BlueFors-Alert mode
 @BlueFors-Alert ack
+@BlueFors-Alert set mode auto
+@BlueFors-Alert set mode cold
 @BlueFors-Alert change 1 to 0.05 for 5min
 @BlueFors-Alert change MXC to 0.04 for 10min
 @BlueFors-Alert change MXC_TEMPERATURE to 0.035 for ever
@@ -861,6 +1007,45 @@ curl -s "https://slack.com/api/conversations.history?channel=C0B42G4AU0N&limit=1
 cd /home/cdms/bluefors_monitor
 python3 monitor.py --init
 ```
+
+### Monitor: wrong mode detected / stuck in wrong mode
+
+Check the current mode and the raw 50K sensor value:
+
+```bash
+# What mode does the state file say?
+python3 -c "import json; s=json.load(open('monitor_state.json')); print(s.get('current_mode'), s.get('mode_override'))"
+
+# What is the latest 50K plate temperature?
+PGPASSWORD=cs2monitor psql -h localhost -U postgres -d cs2 \
+  -c "SELECT value, time FROM double_value_change_events WHERE mapping='50K_TEMPERATURE' ORDER BY time DESC LIMIT 1;"
+```
+
+If the sensor reading looks wrong, override the mode manually via Slack:
+
+```
+@BlueFors-Alert set mode cold      # force COLD mode
+@BlueFors-Alert set mode idle      # force IDLE mode
+@BlueFors-Alert set mode auto      # restore auto-detection when sensor recovers
+```
+
+### Monitor: too many alerts / false positives during cool-down
+
+During cool-down the 50K temperature should pass through the TRANSITIONING band (80–200 K) and threshold alerts should be automatically suppressed. If you are receiving alerts during cool-down, check:
+
+1. Is the system currently in TRANSITIONING mode?
+
+   ```bash
+   python3 -c "import json; print(json.load(open('monitor_state.json')).get('current_mode'))"
+   ```
+
+2. If it shows IDLE or COLD, the 50K sensor may be reading incorrectly. Override mode:
+
+   ```
+   @BlueFors-Alert set mode auto
+   ```
+
+   Or if the sensor is broken, force COLD or IDLE to suppress the wrong threshold set.
 
 ---
 
