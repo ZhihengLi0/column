@@ -2,22 +2,26 @@
 """
 BlueFors alert monitor — runs every minute via cron.
 
+Operating modes (auto-detected from 50K_TEMPERATURE):
+  IDLE          fridge at room temperature, not running
+  TRANSITIONING cooling down or warming up — threshold alerts suppressed
+  COLD          fridge operational at base temperature
+
 Usage:
   python3 monitor.py         # normal run
   python3 monitor.py --init  # record current state, skip historical alerts
 
-Interactive Slack commands (mention @BlueFors-Alert):
-  help                              show command list
-  list                              show sensor numbers and current thresholds
-  status                            show active overrides and silenced sensors
-  ack                               silence ALL current alerts for 10 min
-  change <sensor> to <val> for 5min    temporary 5-min threshold override
-  change <sensor> to <val> for 10min   temporary 10-min threshold override
-  change <sensor> to <val> for ever    permanent threshold change
-  reset <sensor>                    restore default threshold
-
-React with ✅ 👏 👍 🤙 on an alert message, or reply "ok"/"OK" in thread
-→ that sensor is silenced for 10 minutes.
+Slack commands (@BlueFors-Alert <command>):
+  help
+  list
+  status
+  mode                              show current mode
+  set mode auto                     return to automatic mode detection
+  set mode idle                     force IDLE mode
+  set mode cold                     force COLD mode
+  ack                               silence ALL sensor alerts 10 min
+  change <sensor> to <val> for 5min / 10min / ever
+  reset <sensor>
 """
 
 import re
@@ -49,9 +53,29 @@ log = logging.getLogger(__name__)
 
 STATE_FILE = Path(__file__).parent / "monitor_state.json"
 
+# ── Modes ─────────────────────────────────────────────────────────────────────
+MODES = ("IDLE", "TRANSITIONING", "COLD")
+
+MODE_EMOJI = {
+    "IDLE":          "⚪",
+    "TRANSITIONING": "🔵",
+    "COLD":          "🟢",
+}
+
+MODE_DESC = {
+    "IDLE":
+        "System is at *room temperature* (not running).\n"
+        "Monitoring: idle pressure checks + CS2 system alerts.",
+    "TRANSITIONING":
+        "System is *cooling down or warming up*.\n"
+        "Threshold alerts suppressed — only CS2 system alerts forwarded.",
+    "COLD":
+        "System is *cold and operational*.\n"
+        "Full sensor threshold monitoring active.",
+}
+
 # ── Sensor registry ───────────────────────────────────────────────────────────
-# (full_name, short_alias, description)
-SENSOR_LIST = [
+SENSOR_LIST_COLD = [
     ("MXC_TEMPERATURE",     "MXC",    "Mixing chamber temperature"),
     ("MXC_TEMPERATURE_FAR", "MXCFAR", "Mixing chamber far-end temperature"),
     ("STILL_TEMPERATURE",   "STILL",  "Still temperature"),
@@ -65,9 +89,17 @@ SENSOR_LIST = [
     ("FLOW_VALUE",          "FLOW",   "Helium flow rate"),
 ]
 
-SENSOR_LOOKUP = {}   # number / alias / full name → canonical name
-for _i, (_full, _short, _) in enumerate(SENSOR_LIST, 1):
+SENSOR_LIST_IDLE = [
+    ("P2_PRESSURE", "P2",   "P2 still pressure"),
+    ("P5_PRESSURE", "P5",   "P5 MXC pressure"),
+]
+
+SENSOR_LOOKUP = {}
+for _i, (_full, _short, _) in enumerate(SENSOR_LIST_COLD, 1):
     SENSOR_LOOKUP[str(_i)]        = _full
+    SENSOR_LOOKUP[_short.upper()] = _full
+    SENSOR_LOOKUP[_full.upper()]  = _full
+for _full, _short, _ in SENSOR_LIST_IDLE:
     SENSOR_LOOKUP[_short.upper()] = _full
     SENSOR_LOOKUP[_full.upper()]  = _full
 
@@ -83,23 +115,26 @@ ACK_REACTIONS = {"white_check_mark", "heavy_check_mark", "clap", "+1", "ok_hand"
 
 # ── State ─────────────────────────────────────────────────────────────────────
 
-def load_state() -> dict:
-    base = {
+def _empty_state() -> dict:
+    return {
         "last_alert_time": {},
         "last_cs2_alert_id": 0,
         "acked_sensors": {},
         "pending_alert_msgs": {},
         "threshold_overrides": {},
         "last_slack_ts": "0",
+        "last_freshness_alert": None,
+        "current_mode": None,       # IDLE / TRANSITIONING / COLD
+        "mode_override": None,      # if manually set via Slack
+        "mode_since": None,
     }
+
+
+def load_state() -> dict:
+    base = _empty_state()
     if STATE_FILE.exists():
         saved = json.loads(STATE_FILE.read_text())
         base.update(saved)
-        for key in ("acked_sensors", "pending_alert_msgs", "threshold_overrides"):
-            if key not in base:
-                base[key] = {}
-        if "last_slack_ts" not in base:
-            base["last_slack_ts"] = "0"
     return base
 
 
@@ -156,10 +191,78 @@ def send_slack(text: str, color: str = "danger", thread_ts: str = None) -> str |
         log.error(f"Slack send failed: {e}")
     return None
 
+# ── Mode detection ────────────────────────────────────────────────────────────
+
+def detect_mode(conn) -> str:
+    """Determine operating mode from 50K plate temperature."""
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT value FROM public.double_value_change_events "
+                "WHERE mapping = %s ORDER BY time DESC LIMIT 1",
+                (config.MODE_DETECTION_SENSOR,)
+            )
+            row = cur.fetchone()
+    except Exception:
+        return "IDLE"
+
+    if row is None:
+        return "IDLE"
+
+    temp = row[0]
+    if temp > config.MODE_IDLE_ABOVE_K:
+        return "IDLE"
+    elif temp < config.MODE_COLD_BELOW_K:
+        return "COLD"
+    else:
+        return "TRANSITIONING"
+
+
+def update_mode(conn, state: dict):
+    """Detect mode, handle transitions, notify Slack if mode changed."""
+    # If manually overridden, use that
+    if state.get("mode_override"):
+        new_mode = state["mode_override"]
+    else:
+        new_mode = detect_mode(conn)
+
+    old_mode = state.get("current_mode")
+
+    if new_mode == old_mode:
+        return  # no change
+
+    state["current_mode"] = new_mode
+    state["mode_since"]   = datetime.now().isoformat()
+
+    emoji = MODE_EMOJI[new_mode]
+    msg = (
+        f"{emoji} *Mode changed: {old_mode or 'STARTUP'} → {new_mode}*\n"
+        f"{MODE_DESC[new_mode]}"
+    )
+
+    color_map = {"IDLE": "#aaaaaa", "TRANSITIONING": "#0066cc", "COLD": "good"}
+    send_slack(msg, color=color_map[new_mode])
+    log.info(f"Mode changed: {old_mode} → {new_mode}")
+
+    # Clear per-sensor alert cooldowns so the new mode's thresholds start fresh
+    state["last_alert_time"] = {}
+    state["acked_sensors"]   = {}
+
 # ── Threshold helpers ─────────────────────────────────────────────────────────
 
 def resolve_sensor(key: str):
     return SENSOR_LOOKUP.get(key.upper().strip())
+
+
+def active_thresholds(state: dict) -> dict:
+    """Return the threshold dict for the current mode."""
+    mode = state.get("current_mode", "IDLE")
+    if mode == "COLD":
+        return config.THRESHOLDS_COLD
+    elif mode == "IDLE":
+        return config.THRESHOLDS_IDLE
+    else:
+        return {}   # TRANSITIONING: no threshold checks
 
 
 def get_threshold(name: str, state: dict):
@@ -172,14 +275,15 @@ def get_threshold(name: str, state: dict):
             return ov.get("max_val"), ov.get("min_val")
         del overrides[name]
         log.info(f"Threshold override for {name} expired")
-    entry = config.THRESHOLDS.get(name, (None, None, ""))
+    thresholds = active_thresholds(state)
+    entry = thresholds.get(name, (None, None, ""))
     return entry[0], entry[1]
 
 # ── Slack polling: acks ───────────────────────────────────────────────────────
 
 def check_acknowledgements(state: dict):
-    pending  = state.setdefault("pending_alert_msgs", {})
-    acked    = state.setdefault("acked_sensors", {})
+    pending   = state.setdefault("pending_alert_msgs", {})
+    acked     = state.setdefault("acked_sensors", {})
     ack_until = (datetime.now() + timedelta(minutes=10)).isoformat()
 
     for sensor in list(pending.keys()):
@@ -244,18 +348,42 @@ def _execute_command(text: str, reply_ts: str, state: dict):
         _cmd_list(state, reply_ts)
         return
 
-    if lower == "status":
+    if lower in ("status", "mode"):
         _cmd_status(state, reply_ts)
+        return
+
+    # set mode auto / idle / cold / transitioning
+    m = re.fullmatch(r"set\s+mode\s+(\S+)", text, re.IGNORECASE)
+    if m:
+        val = m.group(1).upper()
+        if val == "AUTO":
+            state["mode_override"] = None
+            send_slack("✅ Mode detection set to *automatic* (based on 50K temperature).",
+                       color="good", thread_ts=reply_ts)
+            log.info("Mode override cleared — back to auto")
+        elif val in MODES:
+            state["mode_override"] = val
+            state["current_mode"]  = val
+            state["mode_since"]    = datetime.now().isoformat()
+            state["last_alert_time"] = {}
+            emoji = MODE_EMOJI[val]
+            send_slack(f"✅ Mode manually set to *{val}*. {emoji}\n{MODE_DESC[val]}",
+                       color="good", thread_ts=reply_ts)
+            log.info(f"Mode manually set to {val}")
+        else:
+            send_slack(
+                f"Unknown mode `{m.group(1)}`. Valid options: `auto`, `idle`, `cold`.",
+                thread_ts=reply_ts)
         return
 
     if lower == "ack":
         until = (datetime.now() + timedelta(minutes=10)).isoformat()
-        for s in config.THRESHOLDS:
+        for s in {**config.THRESHOLDS_COLD, **config.THRESHOLDS_IDLE}:
             state.setdefault("acked_sensors", {})[s] = until
         state.setdefault("pending_alert_msgs", {}).clear()
         send_slack("✅ All active alerts acknowledged — silenced for 10 minutes.",
                    color="good", thread_ts=reply_ts)
-        log.info("All alerts acked via Slack command")
+        log.info("All alerts acked via Slack")
         return
 
     m = re.fullmatch(r"reset\s+(\S+)", text, re.IGNORECASE)
@@ -266,11 +394,12 @@ def _execute_command(text: str, reply_ts: str, state: dict):
                        thread_ts=reply_ts)
             return
         state.setdefault("threshold_overrides", {}).pop(sensor, None)
-        entry = config.THRESHOLDS.get(sensor, (None, None, ""))
+        all_t = {**config.THRESHOLDS_COLD, **config.THRESHOLDS_IDLE}
+        entry = all_t.get(sensor, (None, None, ""))
         default_val = entry[0] if entry[0] is not None else entry[1]
         send_slack(f"✅ *{sensor}* reset to default: `{default_val} {UNITS.get(sensor, '')}`",
                    color="good", thread_ts=reply_ts)
-        log.info(f"{sensor} threshold reset to default via Slack")
+        log.info(f"{sensor} threshold reset to default")
         return
 
     m = re.fullmatch(r"change\s+(\S+)\s+to\s+([\d.e+\-]+)\s+for\s+(.+)",
@@ -290,7 +419,7 @@ def _execute_command(text: str, reply_ts: str, state: dict):
         raw_dur = m.group(3).strip().lower()
         if raw_dur in ("ever", "forever", "permanent", "permanently"):
             expires_at = None
-            dur_text = "*permanently*"
+            dur_text   = "*permanently*"
         else:
             mins_m = re.match(r"(\d+)\s*min", raw_dur)
             if not mins_m:
@@ -299,11 +428,12 @@ def _execute_command(text: str, reply_ts: str, state: dict):
                     "Use `for 5min`, `for 10min`, or `for ever`.",
                     thread_ts=reply_ts)
                 return
-            mins = int(mins_m.group(1))
+            mins       = int(mins_m.group(1))
             expires_at = (datetime.now() + timedelta(minutes=mins)).isoformat()
-            dur_text = f"for *{mins} minutes*"
+            dur_text   = f"for *{mins} minutes*"
 
-        entry = config.THRESHOLDS.get(sensor, (None, None, ""))
+        all_t = {**config.THRESHOLDS_COLD, **config.THRESHOLDS_IDLE}
+        entry = all_t.get(sensor, (None, None, ""))
         if entry[0] is not None:
             ov = {"max_val": new_val, "min_val": entry[1], "expires_at": expires_at}
         else:
@@ -313,7 +443,7 @@ def _execute_command(text: str, reply_ts: str, state: dict):
         unit = UNITS.get(sensor, "")
         send_slack(f"✅ *{sensor}* threshold → `{new_val} {unit}` {dur_text}.",
                    color="good", thread_ts=reply_ts)
-        log.info(f"{sensor} threshold → {new_val} {dur_text} (Slack command)")
+        log.info(f"{sensor} threshold → {new_val} {dur_text}")
         return
 
     send_slack(
@@ -325,55 +455,84 @@ def _execute_command(text: str, reply_ts: str, state: dict):
 def _cmd_help(reply_ts=None):
     send_slack(
         "*BlueFors Monitor — Commands*\n\n"
-        "*Acknowledge an alert (silences that sensor for 10 min):*\n"
-        "  • React ✅  👏  👍  🤙 on the alert message\n"
-        "  • Reply `ok` or `OK` in the alert thread\n\n"
+        "*Acknowledge an alert (silences sensor 10 min):*\n"
+        "  React ✅  👏  👍  🤙 on the alert, or reply `ok` / `OK` in the thread\n\n"
         "*@mention commands* (`@BlueFors-Alert <command>`):\n"
         "`help` — show this message\n"
+        "`mode` — show current operating mode and what is being monitored\n"
+        "`set mode auto` — automatic mode detection (based on 50K temperature)\n"
+        "`set mode idle` — force IDLE mode (room temperature monitoring)\n"
+        "`set mode cold` — force COLD mode (operational monitoring)\n"
         "`list` — sensor numbers, short names, current thresholds\n"
         "`status` — active overrides and silenced sensors\n"
         "`ack` — silence ALL sensors for 10 min\n"
-        "`change <sensor> to <value> for 5min` — 5-min override\n"
-        "`change <sensor> to <value> for 10min` — 10-min override\n"
-        "`change <sensor> to <value> for ever` — permanent change\n"
-        "`reset <sensor>` — restore factory default\n\n"
-        "_<sensor> accepts: number (1–11), short name, or full name_",
+        "`change <sensor> to <value> for 5min` — 5-min threshold override\n"
+        "`change <sensor> to <value> for 10min` — 10-min threshold override\n"
+        "`change <sensor> to <value> for ever` — permanent threshold change\n"
+        "`reset <sensor>` — restore default threshold\n\n"
+        "_<sensor> = number (see `list`), short name, or full mapping name_",
         color="#0066cc", thread_ts=reply_ts)
 
 
 def _cmd_list(state: dict, reply_ts=None):
-    lines = ["*Sensor List*\n"]
-    for i, (full, short, desc) in enumerate(SENSOR_LIST, 1):
-        max_v, min_v = get_threshold(full, state)
+    mode = state.get("current_mode", "IDLE")
+    emoji = MODE_EMOJI.get(mode, "")
+    lines = [f"*Sensor List — current mode: {emoji} {mode}*\n"]
+
+    lines.append("*COLD mode thresholds:*")
+    for i, (full, short, desc) in enumerate(SENSOR_LIST_COLD, 1):
+        entry = config.THRESHOLDS_COLD.get(full, (None, None, ""))
+        max_v, min_v = entry[0], entry[1]
         unit = UNITS.get(full, "")
         thr  = f"> `{max_v} {unit}`" if max_v is not None else f"< `{min_v} {unit}`"
         ov   = " *(overridden)*" if full in state.get("threshold_overrides", {}) else ""
-        lines.append(f"`{i:2d}` `{short:<7}` {desc} — alert if {thr}{ov}")
+        lines.append(f"  `{i:2d}` `{short:<7}` {desc} — alert if {thr}{ov}")
+
+    lines.append("\n*IDLE mode thresholds (room temperature):*")
+    for full, short, desc in SENSOR_LIST_IDLE:
+        entry = config.THRESHOLDS_IDLE.get(full, (None, None, ""))
+        max_v, min_v = entry[0], entry[1]
+        unit = UNITS.get(full, "")
+        thr  = f"> `{max_v} {unit}`" if max_v is not None else f"< `{min_v} {unit}`"
+        ov   = " *(overridden)*" if full in state.get("threshold_overrides", {}) else ""
+        lines.append(f"  `{short:<7}` {desc} — alert if {thr}{ov}")
+
     lines.append(
         "\n_Example: `@BlueFors-Alert change 1 to 0.05 for 5min`_\n"
-        "_Example: `@BlueFors-Alert change MXC to 0.04 for ever`_")
+        "_Example: `@BlueFors-Alert set mode cold`_")
     send_slack("\n".join(lines), color="#0066cc", thread_ts=reply_ts)
 
 
 def _cmd_status(state: dict, reply_ts=None):
-    lines = ["*Monitor Status*\n"]
+    mode      = state.get("current_mode", "unknown")
+    since     = state.get("mode_since", "")[:16]
+    override  = state.get("mode_override")
+    emoji     = MODE_EMOJI.get(mode, "")
+
+    lines = [
+        f"*Monitor Status*\n",
+        f"*Mode:* {emoji} `{mode}`"
+        + (f" *(manually set)*" if override else f" *(auto-detected)*"),
+        f"*Since:* {since}",
+        f"\n_{MODE_DESC.get(mode, '')}_",
+    ]
+
     overrides = state.get("threshold_overrides", {})
     if overrides:
-        lines.append("*Active threshold overrides:*")
+        lines.append("\n*Active threshold overrides:*")
         for sensor, ov in overrides.items():
             val = ov.get("max_val") if ov.get("max_val") is not None else ov.get("min_val")
             exp = ov.get("expires_at")
             lines.append(f"  • `{sensor}`: `{val} {UNITS.get(sensor, '')}` "
                          f"({'permanent' if exp is None else 'until ' + exp[:16]})")
-    else:
-        lines.append("No active threshold overrides")
 
     acked = state.get("acked_sensors", {})
-    now = datetime.now()
-    active = {s: t for s, t in acked.items() if datetime.fromisoformat(t) > now}
-    if active:
+    now   = datetime.now()
+    active_acks = {s: t for s, t in acked.items()
+                   if datetime.fromisoformat(t) > now}
+    if active_acks:
         lines.append("\n*Silenced sensors:*")
-        for s, until in active.items():
+        for s, until in active_acks.items():
             lines.append(f"  • `{s}` until `{until[:16]}`")
 
     send_slack("\n".join(lines), color="#0066cc", thread_ts=reply_ts)
@@ -381,12 +540,16 @@ def _cmd_status(state: dict, reply_ts=None):
 # ── Alert checks ──────────────────────────────────────────────────────────────
 
 def check_sensor_thresholds(conn, state: dict) -> list:
-    results = []
-    now = datetime.now()
-    cooldown = timedelta(minutes=config.ALERT_COOLDOWN_MINUTES)
-    acked = state.setdefault("acked_sensors", {})
+    thresholds = active_thresholds(state)
+    if not thresholds:
+        return []   # TRANSITIONING — no threshold alerts
 
-    mappings = list(config.THRESHOLDS.keys())
+    results  = []
+    now      = datetime.now()
+    cooldown = timedelta(minutes=config.ALERT_COOLDOWN_MINUTES)
+    acked    = state.setdefault("acked_sensors", {})
+
+    mappings = list(thresholds.keys())
     ph = ",".join(["%s"] * len(mappings))
     with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cur:
         cur.execute(
@@ -401,7 +564,7 @@ def check_sensor_thresholds(conn, state: dict) -> list:
         value = row["value"]
         ts    = row["time"]
         max_v, min_v = get_threshold(name, state)
-        _, _, desc = config.THRESHOLDS[name]
+        _, _, desc = thresholds[name]
 
         if not ((max_v is not None and value > max_v) or
                 (min_v is not None and value < min_v)):
@@ -417,11 +580,13 @@ def check_sensor_thresholds(conn, state: dict) -> list:
 
         state["last_alert_time"][name] = now.isoformat()
         unit = UNITS.get(name, "")
-        msg = (f":warning: *{desc}*\n"
+        mode = state.get("current_mode", "")
+        mode_tag = f" _[{mode} mode]_" if mode else ""
+        msg = (f":warning: *{desc}*{mode_tag}\n"
                f"Current: `{value:.4g} {unit}` | Time: {ts}\n"
                f"_React ✅ or reply `ok` in thread to silence 10 min_")
         results.append((name, msg))
-        log.warning(f"Threshold alert: {name} = {value:.4g}")
+        log.warning(f"Threshold alert [{mode}]: {name} = {value:.4g}")
 
     return results
 
@@ -467,7 +632,6 @@ def check_data_freshness(conn, state: dict):
     age = datetime.now(timezone.utc) - latest
     if age <= timedelta(minutes=5):
         return None
-    # Cooldown: don't repeat freshness alert more than once per 30 min
     last = state.get("last_freshness_alert")
     if last and datetime.now() - datetime.fromisoformat(last) < timedelta(minutes=30):
         return None
@@ -478,25 +642,18 @@ def check_data_freshness(conn, state: dict):
 # ── Init ──────────────────────────────────────────────────────────────────────
 
 def init_state(conn) -> dict:
-    state = {
-        "last_alert_time": {},
-        "last_cs2_alert_id": 0,
-        "acked_sensors": {},
-        "pending_alert_msgs": {},
-        "threshold_overrides": {},
-        "last_slack_ts": "0",
-    }
+    state = _empty_state()
     with conn.cursor() as cur:
         cur.execute("SELECT MAX(id) FROM public.alerts WHERE severity >= %s",
                     (config.CS2_ALERT_MIN_SEVERITY,))
         state["last_cs2_alert_id"] = cur.fetchone()[0] or 0
     now = datetime.now()
-    for mapping in config.THRESHOLDS:
+    for mapping in {**config.THRESHOLDS_COLD, **config.THRESHOLDS_IDLE}:
         state["last_alert_time"][mapping] = now.isoformat()
-    state["last_slack_ts"] = str(time.time())   # skip all pre-existing Slack messages
+    state["last_slack_ts"]       = str(time.time())
     state["last_freshness_alert"] = now.isoformat()
     log.info(f"Initialised: last_cs2_alert_id={state['last_cs2_alert_id']}, "
-             f"skipped alerts for {len(config.THRESHOLDS)} sensors")
+             f"skipped historical alerts")
     return state
 
 # ── Main ──────────────────────────────────────────────────────────────────────
@@ -519,20 +676,29 @@ def run():
             log.info("--init complete.")
             return
 
+        # 1. Poll Slack for acks and commands
         check_acknowledgements(state)
         check_commands(state)
 
+        # 2. Detect / update operating mode
+        update_mode(conn, state)
+
+        # 3. Run checks
         all_alerts = []
+
         freshness = check_data_freshness(conn, state)
         if freshness:
             all_alerts.append((None, freshness))
+
         all_alerts.extend(check_sensor_thresholds(conn, state))
+
         for msg in check_cs2_alerts(conn, state):
             all_alerts.append((None, msg))
 
     finally:
         conn.close()
 
+    # 4. Send alerts and track message timestamps for ack tracking
     pending = state.setdefault("pending_alert_msgs", {})
     for sensor_name, msg in all_alerts:
         ts = send_slack(msg)
