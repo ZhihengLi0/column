@@ -585,7 +585,7 @@ Key fields:
 ## Configuration — config.py
 
 Located at `/home/cdms/bluefors_monitor/config.py` on the Raspberry Pi.  
-**Not committed to GitHub** (contains Slack token and database password — never push this file).
+The version in this repository has credentials replaced with placeholders (`YOUR_SLACK_BOT_TOKEN`, etc.). After cloning, fill in the real values before running the monitor.
 
 ```python
 # BlueFors Monitor Configuration
@@ -1068,8 +1068,8 @@ During cool-down the 50K temperature should pass through the TRANSITIONING band 
 
 Source: [https://github.com/ZhihengLi0/column](https://github.com/ZhihengLi0/column)
 
-> `config.py` is excluded from the repository (contains the Slack token and database password).  
-> After cloning, create it manually on the Pi using the template in the [Configuration](#configuration--configpy) section above.
+> `config.py` is included in the repository with all credentials replaced by placeholders.  
+> After cloning, open it on the Pi and fill in the real Slack token and database password before starting the monitor.
 
 ---
 
