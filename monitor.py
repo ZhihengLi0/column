@@ -141,7 +141,9 @@ def load_state() -> dict:
 
 
 def save_state(state: dict):
-    STATE_FILE.write_text(json.dumps(state, default=str, indent=2))
+    tmp = STATE_FILE.with_suffix(".tmp")
+    tmp.write_text(json.dumps(state, default=str, indent=2))
+    tmp.replace(STATE_FILE)  # atomic: never leaves the file half-written
 
 # ── DB ────────────────────────────────────────────────────────────────────────
 
