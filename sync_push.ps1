@@ -23,7 +23,7 @@ $RemoteDB   = "cs2"
 
 $StateFile = Join-Path $PSScriptRoot "win_sync_state.json"
 $LogFile   = Join-Path $PSScriptRoot "win_sync.log"
-$BatchSize = 5000
+$BatchSize = 50000
 
 $tables = @(
     "double_value_change_events",
