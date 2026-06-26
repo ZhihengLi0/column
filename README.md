@@ -536,12 +536,13 @@ Each run does the following in order:
 |---|---|---|
 | 1 | `update_mode()` | Reads `50K_TEMPERATURE`, determines current mode (IDLE / TRANSITIONING / COLD). If the mode changed since the last run, sends a Slack notification and clears all sensor cooldowns so the new mode's thresholds apply immediately |
 | 2 | `check_acknowledgements()` | Polls Slack for reactions (✅ 👏 👍 🤙) or thread replies (`ok`/`OK`) on previous alert messages; silences that sensor for 10 min if found |
-| 3 | `check_commands()` | Reads new `@BlueFors-Alert` mentions in the channel; parses and executes threshold-change, ack, or mode-switch commands |
+| 3 | `check_commands()` | Reads new `@BlueFors-Alert` mentions in the channel; parses and executes threshold-change, ack, mode-switch, or `pressure reading` commands |
 | 4 | `check_data_freshness()` | Queries `MAX(time)` from `double_value_change_events`; fires an alert if data is more than 5 minutes old (with 30-min cooldown to avoid spam) |
 | 5 | `check_sensor_thresholds()` | Selects the correct threshold set based on mode: IDLE → `THRESHOLDS_IDLE`, COLD → `THRESHOLDS_COLD`, TRANSITIONING → skips entirely. For each sensor, fetches the latest value and sends an alert if the limit is exceeded and cooldown has passed |
 | 6 | `check_cs2_alerts()` | Fetches new rows from the `alerts` table with `severity >= CS2_ALERT_MIN_SEVERITY`; batches by error code and forwards to Slack |
-| 7 | Send + track | Sends all queued Slack messages; saves each message's `ts` (timestamp) so reactions on it can be checked next run |
-| 8 | `save_state()` | Writes `monitor_state.json` — persists mode, last alert times, last CS2 alert ID, acknowledgements, threshold overrides |
+| 7 | `check_r1a_status()` | Checks `boolean_value_change_events` for R1A pump enabled/error status changes, and `double_value_change_events` for R1A power crossing zero (pump on/off); sends a Slack alert for any change |
+| 8 | Send + track | Sends all queued Slack messages; saves each message's `ts` (timestamp) so reactions on it can be checked next run |
+| 9 | `save_state()` | Writes `monitor_state.json` — persists mode, last alert times, last CS2 alert ID, R1A event IDs, acknowledgements, threshold overrides |
 
 ### State file (monitor_state.json)
 
@@ -773,6 +774,7 @@ Mention `@BlueFors-Alert` in the channel followed by a command:
 | Command | Description |
 |---|---|
 | `help` | Show all available commands |
+| `pressure reading` | Show latest P1–P7 pressure values |
 | `list` | Show all sensors with numbers, short names, and current thresholds |
 | `status` | Show current mode, active threshold overrides, and silenced sensors |
 | `mode` | Show current operating mode and what is being monitored |
@@ -836,6 +838,7 @@ Threshold changes apply to whichever mode's thresholds contain that sensor.
 @BlueFors-Alert list
 @BlueFors-Alert status
 @BlueFors-Alert mode
+@BlueFors-Alert pressure reading
 @BlueFors-Alert ack
 @BlueFors-Alert set mode auto
 @BlueFors-Alert set mode cold

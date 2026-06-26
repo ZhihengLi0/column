@@ -13,6 +13,7 @@ Usage:
 
 Slack commands (@BlueFors-Alert <command>):
   help
+  pressure reading                  show latest P1–P7 pressure values
   list
   status
   mode                              show current mode
@@ -319,7 +320,7 @@ def check_acknowledgements(state: dict):
 
 # ── Slack polling: commands ───────────────────────────────────────────────────
 
-def check_commands(state: dict):
+def check_commands(state: dict, conn=None):
     last_ts = state.get("last_slack_ts", "0")
     data = slack_get("conversations.history",
                      {"channel": config.SLACK_CHANNEL, "oldest": last_ts, "limit": 50})
@@ -339,16 +340,20 @@ def check_commands(state: dict):
         text = msg.get("text", "")
         if bot_tag in text:
             clean = re.sub(r"<@[A-Z0-9]+>", "", text).strip()
-            _execute_command(clean, ts, state)
+            _execute_command(clean, ts, state, conn)
 
     state["last_slack_ts"] = new_ts
 
 
-def _execute_command(text: str, reply_ts: str, state: dict):
+def _execute_command(text: str, reply_ts: str, state: dict, conn=None):
     lower = text.lower().strip()
 
     if lower in ("", "help"):
         _cmd_help(reply_ts)
+        return
+
+    if re.fullmatch(r"pressure\s+reading", lower):
+        _cmd_pressure(reply_ts, conn)
         return
 
     if lower == "list":
@@ -461,6 +466,38 @@ def _execute_command(text: str, reply_ts: str, state: dict):
         thread_ts=reply_ts)
 
 
+def _cmd_pressure(reply_ts: str, conn=None):
+    PRESSURE_MAPPINGS = [
+        ("P1_PRESSURE", "P1"),
+        ("P2_PRESSURE", "P2"),
+        ("P3_PRESSURE", "P3"),
+        ("P4_PRESSURE", "P4"),
+        ("P5_PRESSURE", "P5"),
+        ("P6_PRESSURE", "P6"),
+        ("P7_PRESSURE", "P7"),
+    ]
+    if conn is None:
+        send_slack("Cannot read pressures: no database connection.", thread_ts=reply_ts)
+        return
+
+    lines = [":thermometer: *Current Pressure Readings*\n"]
+    with conn.cursor() as cur:
+        for mapping, label in PRESSURE_MAPPINGS:
+            cur.execute(
+                "SELECT value, time FROM public.double_value_change_events "
+                "WHERE mapping = %s ORDER BY time DESC LIMIT 1",
+                (mapping,))
+            row = cur.fetchone()
+            if row:
+                val, ts = float(row[0]), row[1]
+                lines.append(f"  *{label}*: `{val:.4g} mbar`  _(at {str(ts)[:19]})_")
+            else:
+                lines.append(f"  *{label}*: _no data_")
+
+    send_slack("\n".join(lines), color="#0066cc", thread_ts=reply_ts)
+    log.info("Sent pressure reading reply to Slack")
+
+
 def _cmd_help(reply_ts=None):
     send_slack(
         "*BlueFors Monitor — Commands*\n\n"
@@ -468,6 +505,7 @@ def _cmd_help(reply_ts=None):
         "  React ✅  👏  👍  🤙 on the alert, or reply `ok` / `OK` in the thread\n\n"
         "*@mention commands* (`@BlueFors-Alert <command>`):\n"
         "`help` — show this message\n"
+        "`pressure reading` — show latest P1–P7 pressure values\n"
         "`mode` — show current operating mode and what is being monitored\n"
         "`set mode auto` — automatic mode detection (based on 50K temperature)\n"
         "`set mode idle` — force IDLE mode (room temperature monitoring)\n"
@@ -757,7 +795,7 @@ def run():
 
         # 1. Poll Slack for acks and commands
         check_acknowledgements(state)
-        check_commands(state)
+        check_commands(state, conn)
 
         # 2. Detect / update operating mode
         update_mode(conn, state)
