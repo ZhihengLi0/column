@@ -607,6 +607,15 @@ def _cmd_pressure(reply_ts: str, conn=None):
             else:
                 lines.append(f"  *{label}*: _no data_")
 
+        # Cold Cathode gauge (P1 = Pfeiffer MPT200, has on/off switch)
+        cur.execute("SELECT value FROM public.boolean_value_change_events "
+                    "WHERE mapping = 'P1_ENABLED' ORDER BY time DESC LIMIT 1")
+        cc_row = cur.fetchone()
+        if cc_row is not None:
+            cc_on  = bool(cc_row[0])
+            cc_str = ":large_green_circle: ON" if cc_on else ":white_circle: OFF"
+            lines.append(f"\n  *Cold Cathode (P1)*: {cc_str}")
+
     send_slack("\n".join(lines), color="#0066cc", thread_ts=reply_ts)
     log.info("Sent pressure reading reply to Slack")
 
