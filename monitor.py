@@ -133,8 +133,10 @@ def _empty_state() -> dict:
 def load_state() -> dict:
     base = _empty_state()
     if STATE_FILE.exists():
-        saved = json.loads(STATE_FILE.read_text())
-        base.update(saved)
+        text = STATE_FILE.read_text().strip()
+        if text:
+            saved = json.loads(text)
+            base.update(saved)
     return base
 
 
