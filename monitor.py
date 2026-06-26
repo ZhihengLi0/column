@@ -935,6 +935,45 @@ def _cmd_heater_status(reply_ts: str, conn=None):
     log.info("Sent heater status reply to Slack")
 
 
+def check_cold_cathode(conn, state: dict):
+    mode = state.get("current_mode")
+    if mode not in ("IDLE", "COLD"):
+        return None
+
+    with conn.cursor() as cur:
+        cur.execute("SELECT value FROM public.boolean_value_change_events "
+                    "WHERE mapping = 'P1_ENABLED' ORDER BY time DESC LIMIT 1")
+        row = cur.fetchone()
+    if row is None:
+        return None
+
+    cc_on = bool(row[0])
+    key   = "COLD_CATHODE"
+
+    # IDLE: cold cathode should be OFF
+    # COLD: cold cathode should be ON
+    problem = (mode == "IDLE" and cc_on) or (mode == "COLD" and not cc_on)
+    if not problem:
+        state.setdefault("last_alert_time", {}).pop(key, None)
+        return None
+
+    last = state.get("last_alert_time", {}).get(key)
+    if last and datetime.now() - datetime.fromisoformat(last) < timedelta(minutes=config.ALERT_COOLDOWN_MINUTES):
+        return None
+
+    state.setdefault("last_alert_time", {})[key] = datetime.now().isoformat()
+
+    if mode == "IDLE":
+        msg = (":warning: *Cold Cathode (P1) is ON at room temperature!*\n"
+               "System is in IDLE mode — cold cathode gauge should be OFF.")
+    else:
+        msg = (":warning: *Cold Cathode (P1) is OFF while fridge is COLD!*\n"
+               "System is in COLD mode — cold cathode gauge should be ON.")
+
+    log.warning(f"Cold cathode alert: mode={mode}, P1_ENABLED={cc_on}")
+    return msg
+
+
 def check_data_freshness(conn, state: dict):
     with conn.cursor() as cur:
         cur.execute("SELECT MAX(time) FROM public.double_value_change_events")
@@ -1027,6 +1066,10 @@ def run():
             all_alerts.append((None, msg))
 
         for msg in check_heater_status(conn, state):
+            all_alerts.append((None, msg))
+
+        msg = check_cold_cathode(conn, state)
+        if msg:
             all_alerts.append((None, msg))
 
     finally:
