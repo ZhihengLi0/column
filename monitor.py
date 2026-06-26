@@ -852,13 +852,17 @@ HEATER_MAPPINGS = [
     ("HEATSWITCH_MXC_ENABLED",   "MXC Heat Switch"),
     ("STILL_HEATER_ENABLED",     "Still Heater"),
     ("MXC_HEATER_ENABLED",       "MXC Heater"),
-    ("PULSE_TUBE_ENABLED",       "Pulse Tube"),
+]
+
+# Additional devices monitored for state-change alerts (not shown in heater status)
+DEVICE_ALERT_MAPPINGS = HEATER_MAPPINGS + [
+    ("PULSE_TUBE_ENABLED", "Pulse Tube"),
 ]
 
 
 def check_heater_status(conn, state: dict) -> list:
     last_id = state.get("last_heater_event_id", 0)
-    mappings = tuple(m for m, _ in HEATER_MAPPINGS)
+    mappings = tuple(m for m, _ in DEVICE_ALERT_MAPPINGS)
     with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cur:
         cur.execute(
             "SELECT id, mapping, value, time FROM public.boolean_value_change_events "
@@ -869,7 +873,7 @@ def check_heater_status(conn, state: dict) -> list:
         return []
 
     state["last_heater_event_id"] = max(r["id"] for r in rows)
-    label_map = dict(HEATER_MAPPINGS)
+    label_map = dict(DEVICE_ALERT_MAPPINGS)
     msgs = []
     for row in rows:
         label  = label_map.get(row["mapping"], row["mapping"])
