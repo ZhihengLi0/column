@@ -31,14 +31,16 @@ MODE_COLD_BELOW_K     = 80.0    # K — below this the 50K plate is stabilised, 
 # Temperatures are NOT checked here — they are expected to be near room temperature.
 THRESHOLDS_IDLE = {
     # sensor mapping      : (max_value, min_value, description)
-    "P2_PRESSURE":  (10.0,  None, "P2 pressure unusually high at room temperature"),
-    "P5_PRESSURE":  (0.1,   None, "P5 pressure unusually high at room temperature"),
+    # Database stores pressure in bar; thresholds are in bar (1 mbar = 0.001 bar)
+    "P2_PRESSURE":  (0.01,   None, "P2 pressure unusually high at room temperature (> 10 mbar)"),
+    "P5_PRESSURE":  (1e-4,   None, "P5 pressure unusually high at room temperature (> 0.1 mbar)"),
 }
 
 # ── Thresholds: COLD mode (fridge operational, base temperature) ───────────────
 # These are checked when 50K_TEMPERATURE < MODE_COLD_BELOW_K.
 THRESHOLDS_COLD = {
     # sensor mapping          : (max_value, min_value, description)
+    # Temperatures in K (database native unit)
     "MXC_TEMPERATURE":     (0.030,  None,  "MXC temperature > 30 mK"),
     "MXC_TEMPERATURE_FAR": (0.050,  None,  "MXC far-end temperature > 50 mK"),
     "STILL_TEMPERATURE":   (2.0,    None,  "Still temperature > 2 K"),
@@ -46,9 +48,10 @@ THRESHOLDS_COLD = {
     "50K_TEMPERATURE":     (65.0,   None,  "50K plate > 65 K"),
     "B1A_TEMPERATURE":     (1.0,    None,  "B1A stage > 1 K"),
     "B2_TEMPERATURE":      (4.5,    None,  "B2 stage > 4.5 K"),
-    "P1_PRESSURE":         (20.0,   None,  "P1 return pressure > 20 mbar"),
-    "P2_PRESSURE":         (0.5,    None,  "P2 still pressure > 0.5 mbar"),
-    "P5_PRESSURE":         (1e-3,   None,  "P5 MXC pressure > 1e-3 mbar"),
+    # Pressures in bar (database native unit); 1 mbar = 0.001 bar
+    "P1_PRESSURE":         (0.02,   None,  "P1 return pressure > 20 mbar"),
+    "P2_PRESSURE":         (5e-4,   None,  "P2 still pressure > 0.5 mbar"),
+    "P5_PRESSURE":         (1e-6,   None,  "P5 MXC pressure > 1e-3 mbar"),
     "FLOW_VALUE":          (None,   0.01,  "He flow < 0.01 mmol/s"),
 }
 

@@ -108,7 +108,7 @@ UNITS = {
     "MXC_TEMPERATURE": "K",    "MXC_TEMPERATURE_FAR": "K",
     "STILL_TEMPERATURE": "K",  "4K_TEMPERATURE": "K",  "50K_TEMPERATURE": "K",
     "B1A_TEMPERATURE": "K",    "B2_TEMPERATURE": "K",
-    "P1_PRESSURE": "mbar",     "P2_PRESSURE": "mbar",  "P5_PRESSURE": "mbar",
+    "P1_PRESSURE": "bar",      "P2_PRESSURE": "bar",   "P5_PRESSURE": "bar",
     "FLOW_VALUE": "mmol/s",
 }
 
@@ -466,6 +466,15 @@ def _execute_command(text: str, reply_ts: str, state: dict, conn=None):
         thread_ts=reply_ts)
 
 
+def _fmt_pressure(val_bar: float) -> str:
+    mbar = val_bar * 1000
+    if mbar >= 0.1:
+        return f"{mbar:.4g} mbar"
+    else:
+        ubar = mbar * 1000
+        return f"{ubar:.3g} μbar"
+
+
 def _cmd_pressure(reply_ts: str, conn=None):
     PRESSURE_MAPPINGS = [
         ("P1_PRESSURE", "P1"),
@@ -480,7 +489,7 @@ def _cmd_pressure(reply_ts: str, conn=None):
         send_slack("Cannot read pressures: no database connection.", thread_ts=reply_ts)
         return
 
-    lines = [":thermometer: *Current Pressure Readings*\n"]
+    lines = [":compression: *Current Pressure Readings*\n"]
     with conn.cursor() as cur:
         for mapping, label in PRESSURE_MAPPINGS:
             cur.execute(
@@ -489,8 +498,8 @@ def _cmd_pressure(reply_ts: str, conn=None):
                 (mapping,))
             row = cur.fetchone()
             if row:
-                val, ts = float(row[0]), row[1]
-                lines.append(f"  *{label}*: `{val:.4g} mbar`  _(at {str(ts)[:19]})_")
+                val_bar, ts = float(row[0]), row[1]
+                lines.append(f"  *{label}*: `{_fmt_pressure(val_bar)}`  _(at {str(ts)[:19]})_")
             else:
                 lines.append(f"  *{label}*: _no data_")
 
