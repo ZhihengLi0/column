@@ -132,6 +132,7 @@ def _empty_state() -> dict:
         "mode_override": None,      # if manually set via Slack
         "mode_since": None,
         "cs2_alerts_enabled": True, # can be toggled via 'sentinel on/off'
+        "last_heater_event_id": 0,
     }
 
 
@@ -359,6 +360,10 @@ def _execute_command(text: str, reply_ts: str, state: dict, conn=None):
 
     if re.fullmatch(r"pump\s+status", lower):
         _cmd_pump_status(reply_ts, conn)
+        return
+
+    if re.fullmatch(r"heater\s+status", lower):
+        _cmd_heater_status(reply_ts, conn)
         return
 
     m = re.fullmatch(r"sentinel\s+(on|off)", lower)
@@ -615,6 +620,7 @@ def _cmd_help(reply_ts=None):
         "`help` — show this message\n"
         "`pressure reading` — show latest P1–P7 pressure values\n"
         "`pump status` — show on/off, power, speed for all 5 pumps (B1A, B2, R1A, R2, COM)\n"
+        "`heater status` — show on/off and power for Still/MXC heat switches and heaters\n"
         "`mode` — show current operating mode and what is being monitored\n"
         "`set mode auto` — automatic mode detection (based on 50K temperature)\n"
         "`set mode idle` — force IDLE mode (room temperature monitoring)\n"
@@ -841,6 +847,80 @@ def check_r1a_status(conn, state: dict) -> list:
     return msgs
 
 
+HEATER_MAPPINGS = [
+    ("HEATSWITCH_STILL_ENABLED", "Still Heat Switch"),
+    ("HEATSWITCH_MXC_ENABLED",   "MXC Heat Switch"),
+    ("STILL_HEATER_ENABLED",     "Still Heater"),
+    ("MXC_HEATER_ENABLED",       "MXC Heater"),
+]
+
+
+def check_heater_status(conn, state: dict) -> list:
+    last_id = state.get("last_heater_event_id", 0)
+    mappings = tuple(m for m, _ in HEATER_MAPPINGS)
+    with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cur:
+        cur.execute(
+            "SELECT id, mapping, value, time FROM public.boolean_value_change_events "
+            "WHERE mapping = ANY(%s) AND id > %s ORDER BY id",
+            (list(mappings), last_id))
+        rows = cur.fetchall()
+    if not rows:
+        return []
+
+    state["last_heater_event_id"] = max(r["id"] for r in rows)
+    label_map = dict(HEATER_MAPPINGS)
+    msgs = []
+    for row in rows:
+        label  = label_map.get(row["mapping"], row["mapping"])
+        status = ":large_green_circle: *ON*" if row["value"] else ":red_circle: *OFF*"
+        msgs.append(f":fire: *{label}* changed → {status}\nTime: {row['time']}")
+        log.info(f"Heater change: {row['mapping']} = {row['value']}")
+    return msgs
+
+
+def _cmd_heater_status(reply_ts: str, conn=None):
+    if conn is None:
+        send_slack("Cannot read heater status: no database connection.", thread_ts=reply_ts)
+        return
+
+    def latest_bool(mapping):
+        with conn.cursor() as cur:
+            cur.execute("SELECT value, time FROM public.boolean_value_change_events "
+                        "WHERE mapping = %s ORDER BY time DESC LIMIT 1", (mapping,))
+            r = cur.fetchone()
+            return (bool(r[0]), r[1]) if r else (None, None)
+
+    def latest_power(mapping):
+        with conn.cursor() as cur:
+            cur.execute("SELECT value, time FROM public.double_value_change_events "
+                        "WHERE mapping = %s ORDER BY time DESC LIMIT 1", (mapping,))
+            r = cur.fetchone()
+            return float(r[0]) if r else None
+
+    lines = [":fire: *Heater Status*\n"]
+
+    for mapping, label in HEATER_MAPPINGS:
+        val, ts = latest_bool(mapping)
+        if val is None:
+            lines.append(f"  *{label}*: _no data_")
+            continue
+        icon = ":large_green_circle:" if val else ":white_circle:"
+        state_str = "*ON*" if val else "*OFF*"
+        lines.append(f"{icon} *{label}*: {state_str}  _(updated {str(ts)[:19]})_")
+
+    lines.append("")
+
+    still_pwr = latest_power("STILL_HEATING_POWER")
+    mxc_pwr   = latest_power("MXC_HEATING_POWER")
+    if still_pwr is not None:
+        lines.append(f"  *Still Heater power*: `{still_pwr*1000:.2f} mW`")
+    if mxc_pwr is not None:
+        lines.append(f"  *MXC Heater power*: `{mxc_pwr*1000:.2f} mW`")
+
+    send_slack("\n".join(lines), color="#cc6600", thread_ts=reply_ts)
+    log.info("Sent heater status reply to Slack")
+
+
 def check_data_freshness(conn, state: dict):
     with conn.cursor() as cur:
         cur.execute("SELECT MAX(time) FROM public.double_value_change_events")
@@ -870,6 +950,10 @@ def init_state(conn) -> dict:
         cur.execute("SELECT MAX(id) FROM public.boolean_value_change_events "
                     "WHERE mapping IN ('R1A_ENABLED', 'R1A_ERROR_VALUE')")
         state["last_r1a_event_id"] = cur.fetchone()[0] or 0
+        cur.execute("SELECT MAX(id) FROM public.boolean_value_change_events "
+                    "WHERE mapping IN ('HEATSWITCH_STILL_ENABLED','HEATSWITCH_MXC_ENABLED',"
+                    "'STILL_HEATER_ENABLED','MXC_HEATER_ENABLED')")
+        state["last_heater_event_id"] = cur.fetchone()[0] or 0
         cur.execute("SELECT id, value FROM public.double_value_change_events "
                     "WHERE mapping = 'R1A_PUMP_POWER' ORDER BY id DESC LIMIT 1")
         row = cur.fetchone()
@@ -926,6 +1010,9 @@ def run():
             all_alerts.append((None, msg))
 
         for msg in check_r1a_status(conn, state):
+            all_alerts.append((None, msg))
+
+        for msg in check_heater_status(conn, state):
             all_alerts.append((None, msg))
 
     finally:
