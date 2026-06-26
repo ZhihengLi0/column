@@ -97,21 +97,12 @@ function InitStateFromRemote() {
 
 # --- Install as scheduled task ---
 if ($Install) {
-    $script   = $PSCommandPath
-    $action   = New-ScheduledTaskAction `
-                    -Execute "powershell.exe" `
-                    -Argument "-ExecutionPolicy Bypass -WindowStyle Hidden -File `"$script`"" `
-                    -WorkingDirectory $PSScriptRoot
-    $trigger  = New-ScheduledTaskTrigger `
-                    -Once `
-                    -At (Get-Date) `
-                    -RepetitionInterval (New-TimeSpan -Minutes 1)
-    $settings = New-ScheduledTaskSettingsSet `
-                    -ExecutionTimeLimit (New-TimeSpan -Minutes 1) `
-                    -MultipleInstances IgnoreNew
-    Unregister-ScheduledTask -TaskName "BlueForsSync" -Confirm:$false -ErrorAction SilentlyContinue
-    Register-ScheduledTask -TaskName "BlueForsSync" `
-        -Action $action -Trigger $trigger -Settings $settings -RunLevel Highest -Force
+    $script = $PSCommandPath
+    # Delete old task if exists
+    schtasks /delete /tn "BlueForsSync" /f 2>$null
+    # Create task running as SYSTEM — works without interactive login
+    $tr = "powershell.exe -ExecutionPolicy Bypass -NonInteractive -WindowStyle Hidden -File $script"
+    schtasks /create /tn "BlueForsSync" /tr $tr /sc minute /mo 1 /ru SYSTEM /f
     Write-Host "Scheduled task 'BlueForsSync' installed - runs every minute." -ForegroundColor Green
     exit 0
 }
