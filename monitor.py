@@ -852,6 +852,7 @@ HEATER_MAPPINGS = [
     ("HEATSWITCH_MXC_ENABLED",   "MXC Heat Switch"),
     ("STILL_HEATER_ENABLED",     "Still Heater"),
     ("MXC_HEATER_ENABLED",       "MXC Heater"),
+    ("PULSE_TUBE_ENABLED",       "Pulse Tube"),
 ]
 
 
@@ -952,7 +953,7 @@ def init_state(conn) -> dict:
         state["last_r1a_event_id"] = cur.fetchone()[0] or 0
         cur.execute("SELECT MAX(id) FROM public.boolean_value_change_events "
                     "WHERE mapping IN ('HEATSWITCH_STILL_ENABLED','HEATSWITCH_MXC_ENABLED',"
-                    "'STILL_HEATER_ENABLED','MXC_HEATER_ENABLED')")
+                    "'STILL_HEATER_ENABLED','MXC_HEATER_ENABLED','PULSE_TUBE_ENABLED')")
         state["last_heater_event_id"] = cur.fetchone()[0] or 0
         cur.execute("SELECT id, value FROM public.double_value_change_events "
                     "WHERE mapping = 'R1A_PUMP_POWER' ORDER BY id DESC LIMIT 1")
