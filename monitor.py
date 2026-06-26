@@ -41,13 +41,13 @@ INIT_MODE = "--init" in sys.argv
 sys.path.insert(0, str(Path(__file__).parent))
 import config
 
+_handlers = [logging.FileHandler(Path(__file__).parent / "monitor.log")]
+if sys.stdout.isatty():
+    _handlers.append(logging.StreamHandler())
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [monitor] %(levelname)s %(message)s",
-    handlers=[
-        logging.StreamHandler(),
-        logging.FileHandler(Path(__file__).parent / "monitor.log"),
-    ],
+    handlers=_handlers,
 )
 log = logging.getLogger(__name__)
 
