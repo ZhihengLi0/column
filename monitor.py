@@ -1289,6 +1289,14 @@ def generate_summary(conn) -> str:
     v = latest("FLOW_VALUE")
     if v is not None:
         lines.append(f"• Flow — {v:.3f} mmol/s")
+
+    with conn.cursor() as cur:
+        cur.execute("SELECT value FROM public.boolean_value_change_events "
+                    "WHERE mapping='PULSE_TUBE_ENABLED' ORDER BY time DESC LIMIT 1")
+        r = cur.fetchone()
+    if r is not None:
+        pt_state = "ON" if r[0] else "OFF"
+        lines.append(f"• Pulse Tube — {pt_state}")
     lines.append("")
 
     # ── Device state changes in last 12h ────────────────────────────────────
