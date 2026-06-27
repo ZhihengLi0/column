@@ -1003,7 +1003,7 @@ def check_cs2_alerts(conn, state: dict) -> list:
     msgs = []
     for code, group in by_code.items():
         row   = group[0]
-        emoji = ":red_circle:" if row["severity"] >= 2 else ":yellow_circle:"
+        emoji = ":red_circle:" if row["severity"] >= 2 else ":large_yellow_circle:"
         kind  = "Error" if row["severity"] >= 2 else "Warning"
         cnt   = f" (×{len(group)})" if len(group) > 1 else ""
         msgs.append(
@@ -1259,7 +1259,7 @@ def generate_summary(conn) -> str:
     # ── Current mode & key readings ──────────────────────────────────────────
     state = load_state()
     mode  = state.get("current_mode", "unknown")
-    mode_emoji = {"IDLE": ":white_circle:", "COLD": ":blue_circle:", "TRANSITIONING": ":yellow_circle:"}.get(mode, ":grey_question:")
+    mode_emoji = {"IDLE": ":white_circle:", "COLD": ":large_blue_circle:", "TRANSITIONING": ":large_yellow_circle:"}.get(mode, ":grey_question:")
     lines.append(f"*Mode:* {mode_emoji} {mode}")
 
     def latest(mapping):
