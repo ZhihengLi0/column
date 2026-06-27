@@ -1383,8 +1383,8 @@ def generate_summary(conn) -> str:
         # flat if total drift over 12h < 1% of mean
         mean_val = np.mean(ys)
         if mean_val != 0 and abs(slope * 12) / abs(mean_val) < 0.01:
-            return "→"
-        return "↑" if slope > 0 else "↓"
+            return "➡️"
+        return "📈" if slope > 0 else "📉"
 
     # Linear trend direction (least-squares fit through all 12h data points)
     lines.append("*12h linear trend:*")
