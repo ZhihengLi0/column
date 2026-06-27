@@ -1268,8 +1268,7 @@ def generate_summary(conn) -> str:
     lines.append("*Current readings:*")
     temp_parts = []
     for mapping, label in [("MXC_TEMPERATURE","MXC"), ("STILL_TEMPERATURE","Still"),
-                            ("4K_TEMPERATURE","4K"), ("50K_TEMPERATURE","50K"),
-                            ("B1A_TEMPERATURE","B1A"), ("B2_TEMPERATURE","B2")]:
+                            ("4K_TEMPERATURE","4K"), ("50K_TEMPERATURE","50K")]:
         v = latest(mapping)
         if v is not None:
             if mapping == "MXC_TEMPERATURE":
@@ -1361,8 +1360,7 @@ def generate_summary(conn) -> str:
     lines.append("*Sensor range (12h):*")
     temp_range = []
     for mapping, label in [("MXC_TEMPERATURE","MXC"), ("STILL_TEMPERATURE","Still"),
-                            ("4K_TEMPERATURE","4K"), ("50K_TEMPERATURE","50K"),
-                            ("B1A_TEMPERATURE","B1A"), ("B2_TEMPERATURE","B2")]:
+                            ("4K_TEMPERATURE","4K"), ("50K_TEMPERATURE","50K")]:
         with conn.cursor() as cur:
             cur.execute("SELECT MIN(value), MAX(value) FROM public.double_value_change_events "
                         "WHERE mapping=%s AND time>=%s", (mapping, since))
