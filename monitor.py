@@ -432,7 +432,7 @@ def _execute_command(text: str, reply_ts: str, state: dict, conn=None):
         _cmd_heater_status(reply_ts, conn)
         return
 
-    _TIME_PAT = r"\d{4}_\d{4}_\d{4}"
+    _TIME_PAT = r"\d{6}_\d{4}"
     m = re.fullmatch(rf"plot\s+(\S+)\s+({_TIME_PAT})\s+({_TIME_PAT})", lower)
     if m:
         t0 = _parse_plot_time(m.group(2))
@@ -441,8 +441,8 @@ def _execute_command(text: str, reply_ts: str, state: dict, conn=None):
             _cmd_plot(m.group(1), reply_ts, conn, start=t0, end=t1)
         else:
             send_slack(
-                "Invalid time range. Format: `plot P1 2026_0622_0000 2026_0622_0130`\n"
-                "Times are in CDT (YYYY_MMDD_HHMM).",
+                "Invalid time range. Format: `plot P1 260622_0000 260622_0130`\n"
+                "Times are in CDT (YYMMDD_HHMM).",
                 thread_ts=reply_ts)
         return
 
@@ -599,12 +599,12 @@ PRESSURE_MAPPINGS_SET = {"P1_PRESSURE","P2_PRESSURE","P3_PRESSURE",
 _CDT = timezone(timedelta(hours=-5))
 
 def _parse_plot_time(s: str) -> datetime | None:
-    """Parse YYYY_MMDD_HHMM (CDT) → UTC datetime. E.g. '2026_0622_0130'."""
-    m = re.fullmatch(r"(\d{4})_(\d{2})(\d{2})_(\d{2})(\d{2})", s)
+    """Parse YYMMDD_HHMM (CDT) → UTC datetime. E.g. '260622_0130'."""
+    m = re.fullmatch(r"(\d{2})(\d{2})(\d{2})_(\d{2})(\d{2})", s)
     if not m:
         return None
     try:
-        dt = datetime(int(m.group(1)), int(m.group(2)), int(m.group(3)),
+        dt = datetime(2000 + int(m.group(1)), int(m.group(2)), int(m.group(3)),
                       int(m.group(4)), int(m.group(5)), tzinfo=_CDT)
         return dt.astimezone(timezone.utc)
     except ValueError:
@@ -841,7 +841,7 @@ def _cmd_help(reply_ts=None):
         "`heater status` — show on/off and power for Still/MXC heat switches and heaters\n"
         "`plot <sensor>` — plot last 30 min of data as image (e.g. `plot P1`, `plot MXC`)\n"
         "`plot <sensor> <N>min` — plot last N minutes (e.g. `plot P5 60min`)\n"
-        "`plot <sensor> YYYY_MMDD_HHMM YYYY_MMDD_HHMM` — plot custom time range in CDT\n"
+        "`plot <sensor> YYMMDD_HHMM YYMMDD_HHMM` — plot custom time range in CDT (e.g. `plot P1 260622_0000 260622_1200`)\n"
         "`mode` — show current operating mode and what is being monitored\n"
         "`set mode auto` — automatic mode detection (based on 50K temperature)\n"
         "`set mode idle` — force IDLE mode (room temperature monitoring)\n"
