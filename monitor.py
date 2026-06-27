@@ -448,9 +448,12 @@ def _execute_command(text: str, reply_ts: str, state: dict, conn=None):
                 thread_ts=reply_ts)
         return
 
-    m = re.fullmatch(r"plot\s+(\S+)(?:\s+(\d+)\s*min)?", lower)
+    m = re.fullmatch(r"plot\s+(\S+)(?:\s+(\d+)\s*(h|min))?", lower)
     if m:
-        minutes = int(m.group(2)) if m.group(2) else 30
+        if m.group(2):
+            minutes = int(m.group(2)) * 60 if m.group(3) == "h" else int(m.group(2))
+        else:
+            minutes = 30
         _cmd_plot(m.group(1), reply_ts, conn, minutes=minutes)
         return
 
