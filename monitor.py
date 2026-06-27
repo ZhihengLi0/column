@@ -1265,22 +1265,31 @@ def generate_summary(conn) -> str:
             r = cur.fetchone()
         return float(r[0]) if r else None
 
-    readings = []
-    v = latest("50K_TEMPERATURE")
-    if v is not None: readings.append(f"50K plate: {v:.1f} K")
-    if mode == "COLD":
-        v = latest("MXC_TEMPERATURE")
-        if v is not None: readings.append(f"MXC: {v*1000:.2f} mK")
-        v = latest("STILL_TEMPERATURE")
-        if v is not None: readings.append(f"Still: {v:.3f} K")
-    v = latest("P2_PRESSURE")
-    if v is not None: readings.append(f"P2: {_fmt_pressure(v)}")
-    v = latest("P5_PRESSURE")
-    if v is not None: readings.append(f"P5: {_fmt_pressure(v)}")
+    lines.append("*Current readings:*")
+    temp_parts = []
+    for mapping, label in [("MXC_TEMPERATURE","MXC"), ("STILL_TEMPERATURE","Still"),
+                            ("4K_TEMPERATURE","4K"), ("50K_TEMPERATURE","50K"),
+                            ("B1A_TEMPERATURE","B1A"), ("B2_TEMPERATURE","B2")]:
+        v = latest(mapping)
+        if v is not None:
+            if mapping == "MXC_TEMPERATURE":
+                temp_parts.append(f"{label}: {v*1000:.2f} mK")
+            else:
+                temp_parts.append(f"{label}: {v:.3f} K")
+    if temp_parts:
+        lines.append("• Temp — " + "  |  ".join(temp_parts))
+
+    pres_parts = []
+    for i in range(1, 8):
+        v = latest(f"P{i}_PRESSURE")
+        if v is not None:
+            pres_parts.append(f"P{i}: {_fmt_pressure(v)}")
+    if pres_parts:
+        lines.append("• Pressure — " + "  |  ".join(pres_parts))
+
     v = latest("FLOW_VALUE")
-    if v is not None: readings.append(f"Flow: {v:.3f} mmol/s")
-    if readings:
-        lines.append("*Current readings:* " + "  |  ".join(readings))
+    if v is not None:
+        lines.append(f"• Flow — {v:.3f} mmol/s")
     lines.append("")
 
     # ── Device state changes in last 12h ────────────────────────────────────
@@ -1348,29 +1357,44 @@ def generate_summary(conn) -> str:
     except Exception:
         pass
 
-    # Sensor min/max summary for key sensors in COLD mode
-    if mode == "COLD":
-        lines.append("*Sensor range (12h):*")
-        for mapping, label, unit in [
-            ("MXC_TEMPERATURE", "MXC", "mK"),
-            ("STILL_TEMPERATURE", "Still", "K"),
-            ("P2_PRESSURE", "P2", None),
-            ("P5_PRESSURE", "P5", None),
-        ]:
-            with conn.cursor() as cur:
-                cur.execute(
-                    "SELECT MIN(value), MAX(value) FROM public.double_value_change_events "
-                    "WHERE mapping=%s AND time>=%s", (mapping, since))
-                r = cur.fetchone()
-            if r and r[0] is not None:
-                lo, hi = float(r[0]), float(r[1])
-                if unit == "mK":
-                    lines.append(f"• {label}: {lo*1000:.2f} – {hi*1000:.2f} mK")
-                elif unit == "K":
-                    lines.append(f"• {label}: {lo:.4f} – {hi:.4f} K")
-                else:
-                    lines.append(f"• {label}: {_fmt_pressure(lo)} – {_fmt_pressure(hi)}")
-        lines.append("")
+    # Sensor min/max for all sensors over the 12h window
+    lines.append("*Sensor range (12h):*")
+    temp_range = []
+    for mapping, label in [("MXC_TEMPERATURE","MXC"), ("STILL_TEMPERATURE","Still"),
+                            ("4K_TEMPERATURE","4K"), ("50K_TEMPERATURE","50K"),
+                            ("B1A_TEMPERATURE","B1A"), ("B2_TEMPERATURE","B2")]:
+        with conn.cursor() as cur:
+            cur.execute("SELECT MIN(value), MAX(value) FROM public.double_value_change_events "
+                        "WHERE mapping=%s AND time>=%s", (mapping, since))
+            r = cur.fetchone()
+        if r and r[0] is not None:
+            lo, hi = float(r[0]), float(r[1])
+            if mapping == "MXC_TEMPERATURE":
+                temp_range.append(f"{label}: {lo*1000:.2f}–{hi*1000:.2f} mK")
+            else:
+                temp_range.append(f"{label}: {lo:.3f}–{hi:.3f} K")
+    if temp_range:
+        lines.append("• Temp — " + "  |  ".join(temp_range))
+
+    pres_range = []
+    for i in range(1, 8):
+        with conn.cursor() as cur:
+            cur.execute("SELECT MIN(value), MAX(value) FROM public.double_value_change_events "
+                        "WHERE mapping=%s AND time>=%s", (f"P{i}_PRESSURE", since))
+            r = cur.fetchone()
+        if r and r[0] is not None:
+            lo, hi = float(r[0]), float(r[1])
+            pres_range.append(f"P{i}: {_fmt_pressure(lo)}–{_fmt_pressure(hi)}")
+    if pres_range:
+        lines.append("• Pressure — " + "  |  ".join(pres_range))
+
+    with conn.cursor() as cur:
+        cur.execute("SELECT MIN(value), MAX(value) FROM public.double_value_change_events "
+                    "WHERE mapping='FLOW_VALUE' AND time>=%s", (since,))
+        r = cur.fetchone()
+    if r and r[0] is not None:
+        lines.append(f"• Flow — {float(r[0]):.3f}–{float(r[1]):.3f} mmol/s")
+    lines.append("")
 
     return "\n".join(lines)
 
