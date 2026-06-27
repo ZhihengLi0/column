@@ -42,7 +42,8 @@ from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-INIT_MODE = "--init" in sys.argv
+INIT_MODE    = "--init"    in sys.argv
+SUMMARY_MODE = "--summary" in sys.argv
 
 sys.path.insert(0, str(Path(__file__).parent))
 import config
@@ -1243,6 +1244,137 @@ def init_state(conn) -> dict:
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 
+def generate_summary(conn) -> str:
+    now_utc  = datetime.now(timezone.utc)
+    since    = now_utc - timedelta(hours=12)
+    now_cdt  = now_utc.astimezone(_CDT)
+    period   = f"{(now_cdt - timedelta(hours=12)).strftime('%m-%d %H:%M')} – {now_cdt.strftime('%m-%d %H:%M')} CDT"
+
+    lines = [f"*BlueFors 12-Hour Summary* | {now_cdt.strftime('%Y-%m-%d %H:%M')} CDT", f"_{period}_", ""]
+
+    # ── Current mode & key readings ──────────────────────────────────────────
+    state = load_state()
+    mode  = state.get("current_mode", "unknown")
+    mode_emoji = {"IDLE": ":white_circle:", "COLD": ":blue_circle:", "TRANSITIONING": ":yellow_circle:"}.get(mode, ":grey_question:")
+    lines.append(f"*Mode:* {mode_emoji} {mode}")
+
+    def latest(mapping):
+        with conn.cursor() as cur:
+            cur.execute("SELECT value FROM public.double_value_change_events "
+                        "WHERE mapping=%s ORDER BY time DESC LIMIT 1", (mapping,))
+            r = cur.fetchone()
+        return float(r[0]) if r else None
+
+    readings = []
+    v = latest("50K_TEMPERATURE")
+    if v is not None: readings.append(f"50K plate: {v:.1f} K")
+    if mode == "COLD":
+        v = latest("MXC_TEMPERATURE")
+        if v is not None: readings.append(f"MXC: {v*1000:.2f} mK")
+        v = latest("STILL_TEMPERATURE")
+        if v is not None: readings.append(f"Still: {v:.3f} K")
+    v = latest("P2_PRESSURE")
+    if v is not None: readings.append(f"P2: {_fmt_pressure(v)}")
+    v = latest("P5_PRESSURE")
+    if v is not None: readings.append(f"P5: {_fmt_pressure(v)}")
+    v = latest("FLOW_VALUE")
+    if v is not None: readings.append(f"Flow: {v:.3f} mmol/s")
+    if readings:
+        lines.append("*Current readings:* " + "  |  ".join(readings))
+    lines.append("")
+
+    # ── Device state changes in last 12h ────────────────────────────────────
+    TRACKED = [
+        ("R1A_ENABLED",             "R1A Pump"),
+        ("R1A_ERROR_VALUE",         "R1A Error"),
+        ("HEATSWITCH_STILL_ENABLED","Still Heat Switch"),
+        ("HEATSWITCH_MXC_ENABLED",  "MXC Heat Switch"),
+        ("STILL_HEATER_ENABLED",    "Still Heater"),
+        ("MXC_HEATER_ENABLED",      "MXC Heater"),
+        ("PULSE_TUBE_ENABLED",      "Pulse Tube"),
+        ("P1_ENABLED",              "Cold Cathode (P1)"),
+    ]
+    change_lines = []
+    for mapping, label in TRACKED:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT time, value FROM public.boolean_value_change_events "
+                "WHERE mapping=%s AND time>=%s ORDER BY time", (mapping, since))
+            evts = cur.fetchall()
+        for t, val in evts:
+            t_cdt = t.astimezone(_CDT)
+            state_str = "ON" if val else "OFF"
+            change_lines.append(f"• {label}: → *{state_str}* at {t_cdt.strftime('%H:%M')}")
+
+    lines.append("*Device changes (12h):*")
+    if change_lines:
+        lines.extend(change_lines)
+    else:
+        lines.append("• No device state changes")
+    lines.append("")
+
+    # ── CS2 alerts in last 12h ───────────────────────────────────────────────
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT code, title, severity, COUNT(*) as cnt "
+            "FROM public.alerts WHERE datetime>=%s GROUP BY code, title, severity ORDER BY cnt DESC",
+            (since,))
+        alert_rows = cur.fetchall()
+
+    lines.append("*CS2 alerts (12h):*")
+    if alert_rows:
+        for code, title, sev, cnt in alert_rows:
+            emoji = ":red_circle:" if sev >= 2 else ":yellow_circle:"
+            lines.append(f"• {emoji} [{code}] {title}" + (f" ×{cnt}" if cnt > 1 else ""))
+    else:
+        lines.append("• No CS2 alerts")
+    lines.append("")
+
+    # ── Threshold alerts fired (from monitor.log) ────────────────────────────
+    # Count threshold alert lines in last 12h by scanning log
+    threshold_hits = []
+    try:
+        log_path = Path(__file__).parent / "monitor.log"
+        cutoff_str = since.astimezone(_CDT).strftime("%Y-%m-%d %H:%M")
+        with open(log_path) as f:
+            for line in f:
+                if "Sending alert:" in line or "Sent" in line and "alert" in line.lower():
+                    ts_part = line[:19]
+                    try:
+                        if ts_part >= cutoff_str[:16]:
+                            threshold_hits.append(line.strip())
+                    except Exception:
+                        pass
+    except Exception:
+        pass
+
+    # Sensor min/max summary for key sensors in COLD mode
+    if mode == "COLD":
+        lines.append("*Sensor range (12h):*")
+        for mapping, label, unit in [
+            ("MXC_TEMPERATURE", "MXC", "mK"),
+            ("STILL_TEMPERATURE", "Still", "K"),
+            ("P2_PRESSURE", "P2", None),
+            ("P5_PRESSURE", "P5", None),
+        ]:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT MIN(value), MAX(value) FROM public.double_value_change_events "
+                    "WHERE mapping=%s AND time>=%s", (mapping, since))
+                r = cur.fetchone()
+            if r and r[0] is not None:
+                lo, hi = float(r[0]), float(r[1])
+                if unit == "mK":
+                    lines.append(f"• {label}: {lo*1000:.2f} – {hi*1000:.2f} mK")
+                elif unit == "K":
+                    lines.append(f"• {label}: {lo:.4f} – {hi:.4f} K")
+                else:
+                    lines.append(f"• {label}: {_fmt_pressure(lo)} – {_fmt_pressure(hi)}")
+        lines.append("")
+
+    return "\n".join(lines)
+
+
 def run():
     state = load_state()
 
@@ -1259,6 +1391,12 @@ def run():
             state = init_state(conn)
             save_state(state)
             log.info("--init complete.")
+            return
+
+        if SUMMARY_MODE:
+            msg = generate_summary(conn)
+            send_slack(msg, color="good")
+            log.info("Daily summary sent to Slack")
             return
 
         # 1. Poll Slack for acks (commands handled by slack_responder.py)
