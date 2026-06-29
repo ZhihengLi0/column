@@ -118,6 +118,27 @@ TRAINING_DATA = [
     ("泵在运行吗",                            "pump_status"),
     ("泵信息",                                "pump_status"),
     ("scroll pump",                           "pump_status"),
+    # device-specific pump queries
+    ("what is the status of R2",              "pump_status"),
+    ("R2 status",                             "pump_status"),
+    ("how is R2 doing",                       "pump_status"),
+    ("is R2 on",                              "pump_status"),
+    ("R2 running",                            "pump_status"),
+    ("what is R2",                            "pump_status"),
+    ("show R2",                               "pump_status"),
+    ("R1A status",                            "pump_status"),
+    ("how is R1A",                            "pump_status"),
+    ("is R1A running",                        "pump_status"),
+    ("B1A status",                            "pump_status"),
+    ("B2 status",                             "pump_status"),
+    ("COM status",                            "pump_status"),
+    ("what is COM doing",                     "pump_status"),
+    ("turbo status",                          "pump_status"),
+    ("is the turbo on",                       "pump_status"),
+    ("compressor on",                         "pump_status"),
+    ("check R2",                              "pump_status"),
+    ("check R1A",                             "pump_status"),
+    ("check B1A",                             "pump_status"),
 
     # ── heater_status ─────────────────────────────────────────────────────────
     ("heater status",                         "heater_status"),
@@ -150,13 +171,25 @@ TRAINING_DATA = [
     ("valve open closed",                     "valve_status"),
     ("list valve status",                     "valve_status"),
     ("are the valves open",                   "valve_status"),
-    ("V112 status",                           "valve_status"),
-    ("V113 open or closed",                   "valve_status"),
     ("valve check",                           "valve_status"),
     ("阀门状态",                              "valve_status"),
     ("哪些阀门是开的",                        "valve_status"),
     ("阀门开着吗",                            "valve_status"),
     ("查看阀门",                              "valve_status"),
+    # device-specific valve queries
+    ("V112 status",                           "valve_status"),
+    ("V113 open or closed",                   "valve_status"),
+    ("is V112 open",                          "valve_status"),
+    ("what is the status of V113",            "valve_status"),
+    ("V114 status",                           "valve_status"),
+    ("is V106 open",                          "valve_status"),
+    ("check V112",                            "valve_status"),
+    ("what is V112 doing",                    "valve_status"),
+    ("V113 open",                             "valve_status"),
+    ("show V114",                             "valve_status"),
+    ("what is the status of V106",            "valve_status"),
+    ("V001 status",                           "valve_status"),
+    ("how is V101 doing",                     "valve_status"),
 
     # ── change_threshold ──────────────────────────────────────────────────────
     ("change MXC to 0.035 for ever",          "change_threshold"),
@@ -408,6 +441,34 @@ def _extract_all_sensors(text: str) -> list:
     return found
 
 
+# Device name extraction — for routing "R2 status" → pump_status, etc.
+_PUMP_DEVICE_PATTERNS = [
+    (r"\br1a\b",                  "R1A"),
+    (r"\bb1a\b",                  "B1A"),
+    (r"\bb2\b(?!\s*stage|\s*temperature)", "B2"),
+    (r"\br2\b",                   "R2"),
+    (r"\bcom\b(?!\s*press)",      "COM"),
+    (r"\bturbo\b",                "TURBO"),
+    (r"\bscroll\b",               "R2"),
+    (r"\bcompressor\b",           "COM"),
+]
+
+_VALVE_NAME_RE = re.compile(r"\b(v\d{3}[gh]?)\b", re.IGNORECASE)
+
+def _extract_pump_device(text: str):
+    """Return the specific pump name mentioned (R2, B1A, R1A, COM, TURBO…), or None."""
+    t = text.lower()
+    for pattern, name in _PUMP_DEVICE_PATTERNS:
+        if re.search(pattern, t):
+            return name
+    return None
+
+def _extract_valve_name(text: str):
+    """Return the specific valve name mentioned (V112, V106, …), or None."""
+    m = _VALVE_NAME_RE.search(text)
+    return m.group(1).upper() if m else None
+
+
 _CHINESE_HOURS = {"一": 1, "两": 2, "三": 3, "四": 4, "五": 5,
                   "六": 6, "七": 7, "八": 8, "十二": 12, "二十四": 24}
 
@@ -519,6 +580,12 @@ def extract_entities(text: str, intent: str) -> dict:
         entities["sensors"]  = all_s                          # all sensors (multi-plot)
         entities["minutes"]  = _extract_duration_minutes(text) or 30
         entities["range"]    = _extract_time_range(text)
+
+    elif intent == "pump_status":
+        entities["device"] = _extract_pump_device(text)
+
+    elif intent == "valve_status":
+        entities["valve"] = _extract_valve_name(text)
 
     elif intent in ("change_threshold", "reset_threshold"):
         entities["sensor"]       = _extract_sensor(text)

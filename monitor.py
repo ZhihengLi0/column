@@ -806,13 +806,25 @@ def _execute_command(text: str, reply_ts: str, state: dict, conn=None, user_id: 
             _cmd_pressure(reply_ts, conn)
 
         elif intent == "pump_status":
-            _cmd_pump_status(reply_ts, conn)
+            _cmd_pump_status(reply_ts, conn, highlight=ent.get("device"))
 
         elif intent == "heater_status":
             _cmd_heater_status(reply_ts, conn)
 
         elif intent == "valve_status":
-            _cmd_valve_status(reply_ts, conn)
+            _cmd_valve_status(reply_ts, conn, highlight=ent.get("valve"))
+
+        elif intent == "status":
+            # If a specific device is mentioned, route to the right command
+            from nlp_intent import _extract_pump_device, _extract_valve_name
+            pump = _extract_pump_device(text)
+            valve = _extract_valve_name(text)
+            if pump:
+                _cmd_pump_status(reply_ts, conn, highlight=pump)
+            elif valve:
+                _cmd_valve_status(reply_ts, conn, highlight=valve)
+            else:
+                _cmd_status(reply_ts, state)
 
         elif intent == "daily_summary":
             from monitor import generate_summary
@@ -821,9 +833,6 @@ def _execute_command(text: str, reply_ts: str, state: dict, conn=None, user_id: 
 
         elif intent == "help":
             _cmd_help(reply_ts)
-
-        elif intent == "status":
-            _cmd_status(reply_ts, state)
 
         elif intent == "ack":
             until = (datetime.now() + timedelta(minutes=10)).isoformat()
@@ -1168,7 +1177,8 @@ def _cmd_plot_multi(sensor_keys: list, reply_ts: str, conn=None,
         send_slack("Could not upload plot.", thread_ts=reply_ts)
 
 
-def _cmd_pump_status(reply_ts: str, conn=None):
+def _cmd_pump_status(reply_ts: str, conn=None, highlight: str = None):
+    """Show all pump statuses. If highlight is set (e.g. 'R2'), pin that device first."""
     if conn is None:
         send_slack("Cannot read pump status: no database connection.", thread_ts=reply_ts)
         return
@@ -1195,16 +1205,15 @@ def _cmd_pump_status(reply_ts: str, conn=None):
             return int(r[0]) if r else None
 
     def status_icon(enabled, error):
-        if error:
-            return ":warning:"
-        if enabled:
-            return ":large_green_circle:"
+        if error:   return ":warning:"
+        if enabled: return ":large_green_circle:"
         return ":white_circle:"
 
-    lines = [":gear: *Pump Status*\n"]
+    hl = (highlight or "").upper().replace("TURBO", "B1A")
+    title = f":gear: *Pump Status — {highlight}*\n" if hl else ":gear: *Pump Status*\n"
+    lines = [title]
 
-    # Turbopumps: B1A, B2 — have speed%, power%, temperature
-    for name in ("B1A", "B2"):
+    def fmt_turbo(name):
         enabled = latest_bool(f"{name}_ENABLED")
         error   = latest_bool(f"{name}_ERROR_VALUE")
         temp    = latest_double(f"{name}_TEMPERATURE")
@@ -1218,12 +1227,10 @@ def _cmd_pump_status(reply_ts: str, conn=None):
         if power  is not None: details.append(f"power {power}%")
         if temp   is not None: details.append(f"temp {temp:.1f} K")
         detail_str = "  |  " + ",  ".join(details) if details else ""
-        lines.append(f"{icon} *{name}* (turbo): *{state}*{err_str}{detail_str}")
+        star = " ◄" if hl == name else ""
+        return f"{icon} *{name}* (turbo): *{state}*{err_str}{detail_str}{star}"
 
-    lines.append("")
-
-    # Scroll pumps: R1A, R2 — have power in W
-    for name in ("R1A", "R2"):
+    def fmt_scroll(name):
         enabled = latest_bool(f"{name}_ENABLED")
         error   = latest_bool(f"{name}_ERROR_VALUE")
         power   = latest_double(f"{name}_PUMP_POWER")
@@ -1231,10 +1238,30 @@ def _cmd_pump_status(reply_ts: str, conn=None):
         state   = "ON" if enabled else "OFF"
         err_str = "  :warning: ERROR" if error else ""
         pw_str  = f"  |  power {power:.2f} W" if power is not None else ""
-        lines.append(f"{icon} *{name}* (scroll): *{state}*{err_str}{pw_str}")
+        star = " ◄" if hl == name else ""
+        return f"{icon} *{name}* (scroll): *{state}*{err_str}{pw_str}{star}"
+
+    # If a specific device is highlighted, show it first
+    all_devices = {
+        "B1A": lambda: fmt_turbo("B1A"),
+        "B2":  lambda: fmt_turbo("B2"),
+        "R1A": lambda: fmt_scroll("R1A"),
+        "R2":  lambda: fmt_scroll("R2"),
+    }
+    if hl and hl in all_devices:
+        lines.append(all_devices[hl]())
+        lines.append("_Other pumps:_")
+        for name, fn in all_devices.items():
+            if name != hl:
+                lines.append(fn())
+    else:
+        for name in ("B1A", "B2"):
+            lines.append(fmt_turbo(name))
+        lines.append("")
+        for name in ("R1A", "R2"):
+            lines.append(fmt_scroll(name))
 
     lines.append("")
-
     # Compressor: COM
     enabled = latest_bool("COM_ENABLED")
     error   = latest_bool("COM_ERROR_VALUE")
@@ -1243,10 +1270,11 @@ def _cmd_pump_status(reply_ts: str, conn=None):
     state   = "ON" if enabled else "OFF"
     err_str = "  :warning: ERROR" if error else ""
     pw_str  = f"  |  power {power:.2f} W" if power is not None else ""
-    lines.append(f"{icon} *COM* (compressor): *{state}*{err_str}{pw_str}")
+    star = " ◄" if hl == "COM" else ""
+    lines.append(f"{icon} *COM* (compressor): *{state}*{err_str}{pw_str}{star}")
 
     send_slack("\n".join(lines), color="#0066cc", thread_ts=reply_ts)
-    log.info("Sent pump status reply to Slack")
+    log.info(f"Sent pump status reply to Slack" + (f" [highlight={hl}]" if hl else ""))
 
 
 def _fmt_pressure(val_bar: float) -> str:
@@ -1628,13 +1656,16 @@ VALVE_MAPPINGS = [
     "V501H", "V502H", "V503H",
 ]
 
-def _cmd_valve_status(reply_ts: str, conn=None):
+def _cmd_valve_status(reply_ts: str, conn=None, highlight: str = None):
+    """Show all valve statuses. If highlight is set (e.g. 'V112'), pin that valve first."""
     if conn is None:
         send_slack("Cannot read valve status: no database connection.", thread_ts=reply_ts)
         return
 
-    lines = [":valve: *Valve Status*\n"]
-    open_valves, closed_valves = [], []
+    hl = (highlight or "").upper()
+    title = f":valve: *Valve Status — {hl}*\n" if hl else ":valve: *Valve Status*\n"
+    lines = [title]
+    open_valves, closed_valves, highlighted = [], [], []
 
     for v in VALVE_MAPPINGS:
         mapping = f"{v}_ENABLED"
@@ -1646,21 +1677,31 @@ def _cmd_valve_status(reply_ts: str, conn=None):
             continue
         is_open = bool(row[0])
         ts_str  = str(row[1])[:16]
-        if is_open:
+        star = " ◄" if v == hl else ""
+        if v == hl:
+            state = "OPEN" if is_open else "CLOSED"
+            icon  = ":large_green_circle:" if is_open else ":red_circle:"
+            highlighted.append(f"{icon} *{v}* — *{state}*  _(at {ts_str})_{star}")
+        elif is_open:
             open_valves.append(f":large_green_circle: *{v}* — OPEN  _(at {ts_str})_")
         else:
             closed_valves.append(f":white_circle: {v} — closed")
 
+    if highlighted:
+        lines.extend(highlighted)
+        lines.append("")
+        lines.append("_All valves:_")
+
     if open_valves:
-        lines.append("*Open valves:*")
+        lines.append("*Open:*")
         lines.extend(open_valves)
         lines.append("")
 
-    lines.append("*Closed valves:*")
+    lines.append("*Closed:*")
     lines.extend(closed_valves)
 
     send_slack("\n".join(lines), color="#2E86AB", thread_ts=reply_ts)
-    log.info("Sent valve status reply to Slack")
+    log.info(f"Sent valve status reply to Slack" + (f" [highlight={hl}]" if hl else ""))
 
 
 # ── Valve change alerts (V112, V113, V114) ───────────────────────────────────
