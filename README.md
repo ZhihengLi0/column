@@ -794,6 +794,7 @@ React to any alert message with **✅ 👏 👍 🤙**, or reply `ok` / `OK` in 
 | `pressure reading` | Latest P1–P7 pressures + Cold Cathode ON/OFF |
 | `pump status` | B1A, B2 (turbo), R1A, R2 (scroll), COM compressor — on/off, speed, power, temp |
 | `heater status` | Still/MXC heat switches and heaters — on/off and power |
+| `valve status` | All 25 valves grouped by open/closed state with last-change timestamp |
 | `list` | All sensors with numbers, short names, and current thresholds |
 | `status` | Current mode, active threshold overrides, silenced sensors |
 | `mode` | Current operating mode |
@@ -858,6 +859,16 @@ The `<sensor>` field accepts a number, short name, or full mapping name.
 | `sentinel on` | Resume CS2 system alert forwarding |
 | `sentinel off` | Pause CS2 system alert forwarding |
 
+### Valve state change alerts (V112 / V113 / V114)
+
+The bot monitors **V112, V113, and V114** continuously and sends an automatic Slack alert whenever any of these valves opens or closes — active in **both COLD and IDLE modes**:
+
+> :valve: V112 changed: **OPEN** → **CLOSED** _(at 2026-06-29 14:23)_
+
+This is separate from `valve status` (which shows all 25 valves on demand). Alerts fire on every state change with no cooldown.
+
+---
+
 ### Daily summary
 
 The bot automatically sends a 12-hour summary to Slack at **8:00 AM** and **8:00 PM CDT** covering:
@@ -897,6 +908,7 @@ The bot automatically sends a 12-hour summary to Slack at **8:00 AM** and **8:00
 @BlueFors-Alert pressure reading
 @BlueFors-Alert pump status
 @BlueFors-Alert heater status
+@BlueFors-Alert valve status
 @BlueFors-Alert plot P2
 @BlueFors-Alert plot MXC 12h
 @BlueFors-Alert plot P2 P5 2h
@@ -921,7 +933,7 @@ Starting from **v3.0.0**, the bot understands natural language **on top of** all
 
 The classifier is a **TF-IDF + Logistic Regression** pipeline trained on ~200 bilingual (Chinese/English) example phrases. It runs entirely on the Raspberry Pi with no API calls and classifies each message in under 10 ms.
 
-12 intents are supported: `plot`, `pressure reading`, `pump status`, `heater status`, `change threshold`, `reset threshold`, `sentinel`, `set mode`, `acknowledge`, `daily summary`, `help`, `status`.
+14 intents are supported: `plot`, `pressure reading`, `pump status`, `heater status`, `valve status`, `change threshold`, `reset threshold`, `sentinel`, `set mode`, `acknowledge`, `daily summary`, `help`, `status`, and device-specific routing (see below).
 
 ### Natural language examples
 
@@ -938,6 +950,23 @@ The classifier is a **TF-IDF + Logistic Regression** pipeline trained on ~200 bi
 @BlueFors-Alert show me the heater status
 @BlueFors-Alert plot P2 for the last two hours
 ```
+
+#### Device-specific queries (v3.3.0)
+
+The bot understands natural language queries about **specific pumps and valves by name**:
+
+```
+@BlueFors-Alert what is the status of R2
+@BlueFors-Alert how is R2 doing
+@BlueFors-Alert is R1A running
+@BlueFors-Alert B1A status
+@BlueFors-Alert COM on or off
+@BlueFors-Alert what is V113 doing
+@BlueFors-Alert is V112 open
+@BlueFors-Alert V106 status
+```
+
+When a device name is detected (R2, R1A, B1A, COM, V112, V106, …), the bot routes to the correct command (`pump status` or `valve status`) and highlights the queried device at the top of the reply with a `◄` marker. All other devices are still shown for context.
 
 ### Confidence hint and self-learning (v3.1.0)
 
@@ -1241,6 +1270,7 @@ This release series marks a fundamental shift: the bot moves from rigid command 
 | 3.0.0 | [v3.0.0](https://github.com/ZhihengLi0/column_monitor/releases/tag/v3.0.0) | **Natural language understanding** — `nlp_intent.py` adds a local TF-IDF + Logistic Regression classifier. Supports 12 intents in Chinese and English via character n-grams; no API cost, runs on-device in < 10 ms. All existing exact-match commands continue to work. Entity extraction: sensor names, durations, time ranges, numeric values with unit conversion (mK→K, mbar→bar), cold/idle mode prefix, on/off |
 | 3.1.0 | [v3.1.0](https://github.com/ZhihengLi0/column_monitor/releases/tag/v3.1.0) | **Self-learning from Slack feedback** — when NLP confidence < 45%, the bot appends a correction invite in thread. User replies `"wrong, I meant pump status"` → example saved to `nlp_user_examples.jsonl` → classifier rebuilt immediately. Confirmed correct responses (`yes`/`correct`) also add positive training examples. Accuracy improves organically through normal use with no manual retraining |
 | 3.2.0 | [v3.2.0](https://github.com/ZhihengLi0/column_monitor/releases/tag/v3.2.0) | **Multi-sensor comparison plots + conversation context** — `plot P2 P5 2h` overlays multiple sensors on one chart; dual y-axis when units differ (mbar vs K). Conversation context window (10 min): `longer` extends the last plot, `plot 2h` reuses the last sensor, `plot it` resolves to last sensor |
+| 3.3.0 | [v3.3.0](https://github.com/ZhihengLi0/column_monitor/releases/tag/v3.3.0) | **Valve status + device-specific NLP routing** — `valve status` command shows all 25 valves grouped open/closed with last-change timestamps; automatic Slack alerts on V112/V113/V114 state changes (active in both COLD and IDLE modes). NLP classifier upgraded to 14 intents and now understands device-specific queries: "what is the status of R2", "is V112 open" — routes to `pump status` or `valve status` and highlights the queried device first in the reply |
 
 ---
 
