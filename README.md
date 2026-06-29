@@ -760,24 +760,36 @@ tail -f /home/cdms/bluefors_monitor/monitor.log
 
 ## Slack Interaction
 
+All commands are sent by mentioning `@BlueFors-Alert` in the channel. The bot replies within ~5 seconds (fast responder polls Slack every 5 s).
+
 ### Acknowledge an alert (silence 10 minutes)
 
-React to any alert message with **✅ 👏 👍 🤙**, or reply `ok` / `OK` in the alert thread.  
-The monitor checks for these each minute and silences that sensor for 10 minutes.
+React to any alert message with **✅ 👏 👍 🤙**, or reply `ok` / `OK` in the alert thread.
 
 ### Commands
 
-Mention `@BlueFors-Alert` in the channel followed by a command:
-
-#### Information
+#### Status & readings
 
 | Command | Description |
 |---|---|
 | `help` | Show all available commands |
-| `pressure reading` | Show latest P1–P7 pressure values |
-| `list` | Show all sensors with numbers, short names, and current thresholds |
-| `status` | Show current mode, active threshold overrides, and silenced sensors |
-| `mode` | Show current operating mode and what is being monitored |
+| `pressure reading` | Latest P1–P7 pressures + Cold Cathode ON/OFF |
+| `pump status` | B1A, B2 (turbo), R1A, R2 (scroll), COM compressor — on/off, speed, power, temp |
+| `heater status` | Still/MXC heat switches and heaters — on/off and power |
+| `list` | All sensors with numbers, short names, and current thresholds |
+| `status` | Current mode, active threshold overrides, silenced sensors |
+| `mode` | Current operating mode |
+
+#### Plots
+
+| Command | Description |
+|---|---|
+| `plot <sensor>` | Plot last 30 min as image (sends PNG to Slack) |
+| `plot <sensor> 12h` | Plot last N hours (`2h`, `6h`, `12h`, `24h`, …) |
+| `plot <sensor> 30min` | Plot last N minutes |
+| `plot <sensor> YYMMDD_HHMM YYMMDD_HHMM` | Plot a specific time range (CDT) |
+
+Available sensors: `P1`–`P7`, `MXC`, `STILL`, `4K`, `50K`, `FLOW`
 
 #### Acknowledgement
 
@@ -789,23 +801,42 @@ Mention `@BlueFors-Alert` in the channel followed by a command:
 
 | Command | Description |
 |---|---|
-| `set mode auto` | Return to automatic mode detection (based on 50K temperature) |
-| `set mode idle` | Force IDLE mode (only pressure checks) |
+| `set mode auto` | Return to automatic mode detection (50K temperature) |
+| `set mode idle` | Force IDLE mode (pressure checks only) |
 | `set mode cold` | Force COLD mode (full threshold monitoring) |
 
-> Use `set mode` when the auto-detection seems wrong (e.g. a bad sensor reading holds the system in the wrong mode).
+#### Threshold changes (mode-specific)
 
-#### Threshold changes
+Threshold overrides are **separate for COLD and IDLE modes** — changing one mode never affects the other.
 
 | Command | Description |
 |---|---|
-| `change <sensor> to <value> for 5min` | Temporary 5-minute threshold override |
-| `change <sensor> to <value> for 10min` | Temporary 10-minute threshold override |
-| `change <sensor> to <value> for ever` | Permanent threshold change (until `reset`) |
-| `reset <sensor>` | Restore factory default threshold |
+| `change <sensor> to <value> for 30min` | Override threshold for **current** mode, expires after N min |
+| `change <sensor> to <value> for 2h` | Override for current mode, expires after N hours |
+| `change <sensor> to <value> for ever` | Override for current mode, permanent |
+| `cold change <sensor> to <value> for ever` | Override COLD mode threshold explicitly |
+| `idle change <sensor> to <value> for ever` | Override IDLE mode threshold explicitly |
+| `reset <sensor>` | Restore default for current mode |
+| `cold reset <sensor>` | Restore COLD mode default |
+| `idle reset <sensor>` | Restore IDLE mode default |
 
-The `<sensor>` field accepts a number, short name, or full mapping name interchangeably.  
-Threshold changes apply to whichever mode's thresholds contain that sensor.
+Duration options: `30min`, `2h`, `24h`, `for ever` (any number of minutes or hours).  
+The `<sensor>` field accepts a number, short name, or full mapping name.
+
+#### Alerts toggle
+
+| Command | Description |
+|---|---|
+| `sentinel on` | Resume CS2 system alert forwarding |
+| `sentinel off` | Pause CS2 system alert forwarding |
+
+### Daily summary
+
+The bot automatically sends a 12-hour summary to Slack at **8:00 AM** and **8:00 PM CDT** covering:
+- Current mode and all sensor readings (temperatures, pressures, flow, Pulse Tube)
+- Device state changes (pumps, heaters, heat switches, cold cathode)
+- CS2 alerts fired
+- Linear trend direction (📈 📉 ➡️) for each sensor over the 12-hour window
 
 ### Sensor identifiers
 
@@ -820,33 +851,33 @@ Threshold changes apply to whichever mode's thresholds contain that sensor.
 | 5 | 50K | 50K_TEMPERATURE | K | > 65.0 K |
 | 6 | B1A | B1A_TEMPERATURE | K | > 1.0 K |
 | 7 | B2 | B2_TEMPERATURE | K | > 4.5 K |
-| 8 | P1 | P1_PRESSURE | mbar | > 20.0 mbar |
-| 9 | P2 | P2_PRESSURE | mbar | > 0.5 mbar |
-| 10 | P5 | P5_PRESSURE | mbar | > 1e-3 mbar |
+| 8 | P1 | P1_PRESSURE | bar | > 0.02 bar (20 mbar) |
+| 9 | P2 | P2_PRESSURE | bar | > 5e-4 bar (0.5 mbar) |
+| 10 | P5 | P5_PRESSURE | bar | > 1e-6 bar (1e-3 mbar) |
 | 11 | FLOW | FLOW_VALUE | mmol/s | < 0.01 mmol/s |
 
 #### IDLE mode sensors
 
 | # | Short name | Full mapping name | Unit | Default alert condition |
 |---|---|---|---|---|
-| 9 | P2 | P2_PRESSURE | mbar | > 10.0 mbar |
-| 10 | P5 | P5_PRESSURE | mbar | > 0.1 mbar |
+| 9 | P2 | P2_PRESSURE | bar | > 0.01 bar (10 mbar) |
+| 10 | P5 | P5_PRESSURE | bar | > 1e-4 bar (0.1 mbar) |
 
 ### Examples
 
 ```
-@BlueFors-Alert list
-@BlueFors-Alert status
-@BlueFors-Alert mode
 @BlueFors-Alert pressure reading
-@BlueFors-Alert ack
-@BlueFors-Alert set mode auto
+@BlueFors-Alert pump status
+@BlueFors-Alert heater status
+@BlueFors-Alert plot P2
+@BlueFors-Alert plot MXC 12h
+@BlueFors-Alert plot P1 260620_0000 260622_1200
+@BlueFors-Alert cold change MXC to 0.035 for ever
+@BlueFors-Alert idle change P2 to 0.008 for 24h
+@BlueFors-Alert cold reset MXC
+@BlueFors-Alert sentinel off
 @BlueFors-Alert set mode cold
-@BlueFors-Alert change 1 to 0.05 for 5min
-@BlueFors-Alert change MXC to 0.04 for 10min
-@BlueFors-Alert change MXC_TEMPERATURE to 0.035 for ever
-@BlueFors-Alert reset STILL
-@BlueFors-Alert reset 3
+@BlueFors-Alert ack
 ```
 
 ---
