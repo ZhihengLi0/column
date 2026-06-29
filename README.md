@@ -18,10 +18,11 @@ Data is synced every minute from the Windows CS2 PC to a Raspberry Pi, which run
 9. [Slack App Setup](#slack-app-setup)
 10. [Starting the System](#starting-the-system)
 11. [Slack Interaction](#slack-interaction)
-12. [Database Schema](#database-schema)
-13. [Sensor Mappings](#sensor-mappings)
-14. [Troubleshooting](#troubleshooting)
-15. [File Reference](#file-reference)
+12. [NLP Natural Language Interface](#nlp-natural-language-interface)
+13. [Database Schema](#database-schema)
+14. [Sensor Mappings](#sensor-mappings)
+15. [Troubleshooting](#troubleshooting)
+16. [File Reference](#file-reference)
 
 **Appendix**
 - [A — CS2 System & Database Background](#appendix-a--cs2-system--database-background)
@@ -216,8 +217,10 @@ sudo -u postgres psql -c "CREATE DATABASE cs2;"
 ### 6. Install Python dependencies
 
 ```bash
-pip3 install psycopg2-binary requests
+pip3 install psycopg2-binary requests matplotlib scikit-learn numpy
 ```
+
+> `matplotlib` is required for plot images. `scikit-learn` and `numpy` are required for the NLP classifier.
 
 ---
 
@@ -561,11 +564,19 @@ Each run does the following in order:
   "pending_alert_msgs": {
     "MXC_TEMPERATURE": { "ts": "1781830413.557959", "channel": "C0B42G4AU0N" }
   },
-  "threshold_overrides": {
+  "threshold_overrides_cold": {
     "MXC_TEMPERATURE": { "max_val": 0.05, "min_val": null, "expires_at": "2026-06-18T14:33:00" }
   },
+  "threshold_overrides_idle": {},
   "last_slack_ts": "1781830413.557959",
-  "last_freshness_alert": "2026-06-18T14:00:00"
+  "last_freshness_alert": "2026-06-18T14:00:00",
+  "ctx": {
+    "sensor_key": "P2",
+    "intent": "plot",
+    "minutes": 720,
+    "ts": 1782000000.0
+  },
+  "nlp_pending": []
 }
 ```
 
@@ -579,7 +590,10 @@ Key fields:
 | `last_alert_time` | Timestamp of last alert per sensor (controls 30-min cooldown) |
 | `acked_sensors` | Sensors silenced until this time (via Slack reaction or `ok` reply) |
 | `pending_alert_msgs` | Slack `ts` of each outstanding alert (needed to check for reactions) |
-| `threshold_overrides` | Temporary or permanent threshold changes set via Slack commands |
+| `threshold_overrides_cold` | Threshold overrides for COLD mode (keyed by sensor mapping) |
+| `threshold_overrides_idle` | Threshold overrides for IDLE mode (separate from COLD) |
+| `ctx` | Last-used sensor/intent for conversation context (expires after 10 min) |
+| `nlp_pending` | NLP responses awaiting user feedback (self-learning loop) |
 
 ---
 
@@ -664,6 +678,8 @@ Go to **OAuth & Permissions** → **Bot Token Scopes** → **Add an OAuth Scope*
 | `chat:write` | Send alert messages |
 | `channels:history` | Read channel messages to detect `@BlueFors-Alert` commands |
 | `reactions:read` | Check if someone reacted ✅ on an alert to acknowledge it |
+| `files:write` | Upload plot PNG images to Slack |
+| `conversations:history` | Read thread replies (used by self-learning NLP feedback loop) |
 
 After adding scopes, click **Reinstall to Workspace** at the top of the page.
 
@@ -762,6 +778,8 @@ tail -f /home/cdms/bluefors_monitor/monitor.log
 
 All commands are sent by mentioning `@BlueFors-Alert` in the channel. The bot replies within ~5 seconds (fast responder polls Slack every 5 s).
 
+> **v3.0+ upgrade:** The exact commands below are still fully supported. In addition, the bot now understands **natural language** in Chinese and English — you no longer need to follow the exact syntax. See [NLP Natural Language Interface](#nlp-natural-language-interface) for details and examples.
+
 ### Acknowledge an alert (silence 10 minutes)
 
 React to any alert message with **✅ 👏 👍 🤙**, or reply `ok` / `OK` in the alert thread.
@@ -788,8 +806,18 @@ React to any alert message with **✅ 👏 👍 🤙**, or reply `ok` / `OK` in 
 | `plot <sensor> 12h` | Plot last N hours (`2h`, `6h`, `12h`, `24h`, …) |
 | `plot <sensor> 30min` | Plot last N minutes |
 | `plot <sensor> YYMMDD_HHMM YYMMDD_HHMM` | Plot a specific time range (CDT) |
+| `plot <s1> <s2> 2h` | **Multi-sensor comparison** — overlay two or more sensors on one chart |
+| `plot <s1> <s2> <s3> 12h` | Up to ~6 sensors; dual y-axis when units differ (e.g. mbar + K) |
 
 Available sensors: `P1`–`P7`, `MXC`, `STILL`, `4K`, `50K`, `FLOW`
+
+**Context shortcuts** (work within 10 minutes of the previous command):
+
+| Command | What it does |
+|---|---|
+| `longer` | Re-plot the last sensor at 4× the previous time range |
+| `plot 12h` | Plot the last sensor at a new duration |
+| `那画个图` / `plot it` | Plot the last sensor again |
 
 #### Acknowledgement
 
@@ -871,7 +899,10 @@ The bot automatically sends a 12-hour summary to Slack at **8:00 AM** and **8:00
 @BlueFors-Alert heater status
 @BlueFors-Alert plot P2
 @BlueFors-Alert plot MXC 12h
+@BlueFors-Alert plot P2 P5 2h
+@BlueFors-Alert plot MXC STILL 4K 12h
 @BlueFors-Alert plot P1 260620_0000 260622_1200
+@BlueFors-Alert longer
 @BlueFors-Alert cold change MXC to 0.035 for ever
 @BlueFors-Alert idle change P2 to 0.008 for 24h
 @BlueFors-Alert cold reset MXC
@@ -879,6 +910,68 @@ The bot automatically sends a 12-hour summary to Slack at **8:00 AM** and **8:00
 @BlueFors-Alert set mode cold
 @BlueFors-Alert ack
 ```
+
+---
+
+## NLP Natural Language Interface
+
+Starting from **v3.0.0**, the bot understands natural language **on top of** all the exact commands listed in [Slack Interaction](#slack-interaction). The exact-match commands (`pressure reading`, `plot P2 12h`, `cold change MXC to 0.035 for ever`, etc.) continue to work exactly as before — they are parsed first with zero overhead. The NLP layer activates only when the message does not match any exact pattern, so it adds capability without breaking anything.
+
+### How it works
+
+The classifier is a **TF-IDF + Logistic Regression** pipeline trained on ~200 bilingual (Chinese/English) example phrases. It runs entirely on the Raspberry Pi with no API calls and classifies each message in under 10 ms.
+
+12 intents are supported: `plot`, `pressure reading`, `pump status`, `heater status`, `change threshold`, `reset threshold`, `sentinel`, `set mode`, `acknowledge`, `daily summary`, `help`, `status`.
+
+### Natural language examples
+
+```
+@BlueFors-Alert P2压力最近一小时怎么样
+@BlueFors-Alert MXC温度超标了，提高阈值到35mK
+@BlueFors-Alert 泵的状态
+@BlueFors-Alert 关闭预警
+@BlueFors-Alert 画P5的图，12小时
+@BlueFors-Alert cold模式下P2阈值改成5e-4
+@BlueFors-Alert 总结一下最近12小时发生了什么
+@BlueFors-Alert P2和P5的压力对比图 2h
+@BlueFors-Alert what's the pump doing
+@BlueFors-Alert show me the heater status
+@BlueFors-Alert plot P2 for the last two hours
+```
+
+### Confidence hint and self-learning (v3.1.0)
+
+When the NLP classifier is uncertain (confidence < 45%), the bot appends:
+
+> *(Auto-detected as: pump status. Reply "wrong" if incorrect.)*
+
+**To correct a misclassification**, reply in the same Slack thread:
+
+```
+wrong, I meant heater status
+```
+
+The bot:
+1. Saves the corrected example to `nlp_user_examples.jsonl`
+2. Rebuilds the classifier immediately (< 0.5 s, on-device)
+3. Confirms: "✅ Got it — I'll treat that as *heater status* next time."
+
+To **confirm** a correct detection, reply `yes` / `correct` / `对` — this also adds the phrase as a positive training example, improving accuracy over time.
+
+All learned examples persist across restarts. The system becomes more accurate with regular use.
+
+### Conversation context (v3.2.0)
+
+The bot remembers the last sensor and time range for **10 minutes**:
+
+```
+@BlueFors-Alert plot P2 12h          ← remembered
+@BlueFors-Alert longer               ← extends to 48h, same sensor
+@BlueFors-Alert 那再画个图            ← P2 again from context
+@BlueFors-Alert plot 2h              ← "plot" without sensor → uses P2
+```
+
+Context is stored in `monitor_state.json` and resets after 10 minutes of inactivity.
 
 ---
 
@@ -1091,16 +1184,22 @@ During cool-down the 50K temperature should pass through the TRANSITIONING band 
 | `win_sync_state.json` | Windows `C:\bluefors_monitor\` | Tracks last synced row ID per table (auto-generated) |
 | `win_sync.log` | Windows `C:\bluefors_monitor\` | Sync run log (auto-generated) |
 | `config.py` | Pi `/home/cdms/bluefors_monitor/` | All credentials and threshold settings |
-| `monitor.py` | Pi `/home/cdms/bluefors_monitor/` | Alert monitor — runs via cron every minute |
+| `monitor.py` | Pi `/home/cdms/bluefors_monitor/` | Alert monitor + Slack command handler (cron every minute; also handles NLP dispatch) |
+| `slack_responder.py` | Pi `/home/cdms/bluefors_monitor/` | Fast Slack responder — polls every 5 s for instant command replies; runs as background process |
+| `nlp_intent.py` | Pi `/home/cdms/bluefors_monitor/` | Local NLP classifier (TF-IDF + Logistic Regression); bilingual intent classification and entity extraction |
+| `nlp_user_examples.jsonl` | Pi `/home/cdms/bluefors_monitor/` | User-corrected training examples accumulated via self-learning (auto-generated; do not delete) |
 | `setup_cron.sh` | Pi `/home/cdms/bluefors_monitor/` | Installs the cron job |
-| `monitor_state.json` | Pi `/home/cdms/bluefors_monitor/` | Runtime state — alert times, acks, overrides (auto-generated) |
+| `monitor_state.json` | Pi `/home/cdms/bluefors_monitor/` | Runtime state — alert times, acks, overrides, NLP context (auto-generated) |
 | `monitor.log` | Pi `/home/cdms/bluefors_monitor/` | Monitor run log (auto-generated) |
+| `responder.log` | Pi `/home/cdms/bluefors_monitor/` | Slack responder log (auto-generated) |
 
 ---
 
 ## GitHub
 
-Source: [https://github.com/ZhihengLi0/column](https://github.com/ZhihengLi0/column)
+Source: [https://github.com/ZhihengLi0/column_monitor](https://github.com/ZhihengLi0/column_monitor)
+
+Also included as a submodule in [SuperCDMS](https://github.com/ZhihengLi0/SuperCDMS).
 
 > `config.py` is included in the repository with all credentials replaced by placeholders.  
 > After cloning, open it on the Pi and fill in the real Slack token and database password before starting the monitor.
@@ -1115,23 +1214,33 @@ Each version is tagged in the git repository. Use `git checkout <tag>` to inspec
 
 | Version | Tag | Description |
 |---------|-----|-------------|
-| 1.0.0 | [v1.0.0](https://github.com/ZhihengLi0/column/releases/tag/v1.0.0) | Initial release — `sync_push.ps1` pushes Windows CS2 data to Pi every minute; `monitor.py` alerts on COLD sensor thresholds via Slack |
-| 1.1.0 | [v1.1.0](https://github.com/ZhihengLi0/column/releases/tag/v1.1.0) | Sync stabilization — fixed PostgreSQL port (5434), Windows Scheduled Task repeat bug, sparse ID query bug, state init from Pi max IDs |
-| 1.2.0 | [v1.2.0](https://github.com/ZhihengLi0/column/releases/tag/v1.2.0) | Interactive Slack — emoji reactions to acknowledge alerts, `ack`, `change <sensor>`, `reset <sensor>` commands |
-| 1.3.0 | [v1.3.0](https://github.com/ZhihengLi0/column/releases/tag/v1.3.0) | Full documentation — comprehensive README with architecture, setup guide, database schema reference, troubleshooting |
+| 1.0.0 | [v1.0.0](https://github.com/ZhihengLi0/column_monitor/releases/tag/v1.0.0) | Initial release — `sync_push.ps1` pushes Windows CS2 data to Pi every minute; `monitor.py` alerts on COLD sensor thresholds via Slack |
+| 1.1.0 | [v1.1.0](https://github.com/ZhihengLi0/column_monitor/releases/tag/v1.1.0) | Sync stabilization — fixed PostgreSQL port (5434), Windows Scheduled Task repeat bug, sparse ID query bug, state init from Pi max IDs |
+| 1.2.0 | [v1.2.0](https://github.com/ZhihengLi0/column_monitor/releases/tag/v1.2.0) | Interactive Slack — emoji reactions to acknowledge alerts, `ack`, `change <sensor>`, `reset <sensor>` commands |
+| 1.3.0 | [v1.3.0](https://github.com/ZhihengLi0/column_monitor/releases/tag/v1.3.0) | Full documentation — comprehensive README with architecture, setup guide, database schema reference, troubleshooting |
 
 ### v2.x — Dual-mode monitor (IDLE + COLD operating modes)
 
 | Version | Tag | Description |
 |---------|-----|-------------|
-| 2.0.0 | [v2.0.0](https://github.com/ZhihengLi0/column/releases/tag/v2.0.0) | **Dual-mode system** — IDLE (room temperature, pressure checks only), TRANSITIONING (alerts suppressed), COLD (full monitoring). Auto-detected from 50K plate temperature. Slack mode commands added |
-| 2.1.0 | [v2.1.0](https://github.com/ZhihengLi0/column/releases/tag/v2.1.0) | Bug fixes — `set mode` not clearing acked sensors, `reset` showing wrong default, duplicate log entries, Windows Scheduled Task failing silently (fixed with `schtasks /ru SYSTEM`) |
-| 2.2.0 | [v2.2.0](https://github.com/ZhihengLi0/column/releases/tag/v2.2.0) | Data catch-up — batch size tooling for recovering 1.8M+ rows after sync outage; restored to 5000 rows/min for normal operation |
-| 2.3.0 | [v2.3.0](https://github.com/ZhihengLi0/column/releases/tag/v2.3.0) | Reliability — fixed silent monitor crash-loop caused by empty state file (process killed mid-write); atomic state file writes using `.tmp` rename |
-| 2.4.0 | [v2.4.0](https://github.com/ZhihengLi0/column/releases/tag/v2.4.0) | Pressure reading command — `@BlueFors-Alert pressure reading` returns P1–P7 instantly; fixed Slack API timestamp precision bug (commands silently dropped); pressure units corrected (database stores bar, display converts to mbar/μbar) |
-| 2.5.0 | [v2.5.0](https://github.com/ZhihengLi0/column/releases/tag/v2.5.0) | Fast responder — `slack_responder.py` polls Slack every 5 seconds for instant command replies (down from up to 1 minute); `sentinel on/off` command to pause/resume CS2 alert forwarding |
-| 2.6.0 | [v2.6.0](https://github.com/ZhihengLi0/column/releases/tag/v2.6.0) | Status commands and device alerts — `pump status` (B1A, B2, R1A, R2, COM), `heater status` (Still/MXC switches and heaters); automatic Slack alerts on R1A pump, heater, and Pulse Tube state changes |
-| 2.7.0 | [v2.7.0](https://github.com/ZhihengLi0/column/releases/tag/v2.7.0) | Cold cathode monitoring — P1 (Pfeiffer MPT200) on/off shown in `pressure reading`; alert if cold cathode is ON during IDLE mode or OFF during COLD mode |
+| 2.0.0 | [v2.0.0](https://github.com/ZhihengLi0/column_monitor/releases/tag/v2.0.0) | **Dual-mode system** — IDLE (room temperature, pressure checks only), TRANSITIONING (alerts suppressed), COLD (full monitoring). Auto-detected from 50K plate temperature. Slack mode commands added |
+| 2.1.0 | [v2.1.0](https://github.com/ZhihengLi0/column_monitor/releases/tag/v2.1.0) | Bug fixes — `set mode` not clearing acked sensors, `reset` showing wrong default, duplicate log entries, Windows Scheduled Task failing silently (fixed with `schtasks /ru SYSTEM`) |
+| 2.2.0 | [v2.2.0](https://github.com/ZhihengLi0/column_monitor/releases/tag/v2.2.0) | Data catch-up — batch size tooling for recovering 1.8M+ rows after sync outage; restored to 5000 rows/min for normal operation |
+| 2.3.0 | [v2.3.0](https://github.com/ZhihengLi0/column_monitor/releases/tag/v2.3.0) | Reliability — fixed silent monitor crash-loop caused by empty state file (process killed mid-write); atomic state file writes using `.tmp` rename |
+| 2.4.0 | [v2.4.0](https://github.com/ZhihengLi0/column_monitor/releases/tag/v2.4.0) | Pressure reading command — `@BlueFors-Alert pressure reading` returns P1–P7 instantly; fixed Slack API timestamp precision bug (commands silently dropped); pressure units corrected (database stores bar, display converts to mbar/μbar) |
+| 2.5.0 | [v2.5.0](https://github.com/ZhihengLi0/column_monitor/releases/tag/v2.5.0) | Fast responder — `slack_responder.py` polls Slack every 5 seconds for instant command replies (down from up to 1 minute); `sentinel on/off` command to pause/resume CS2 alert forwarding |
+| 2.6.0 | [v2.6.0](https://github.com/ZhihengLi0/column_monitor/releases/tag/v2.6.0) | Status commands and device alerts — `pump status` (B1A, B2, R1A, R2, COM), `heater status` (Still/MXC switches and heaters); automatic Slack alerts on R1A pump, heater, and Pulse Tube state changes |
+| 2.7.0 | [v2.7.0](https://github.com/ZhihengLi0/column_monitor/releases/tag/v2.7.0) | Cold cathode monitoring — P1 (Pfeiffer MPT200) on/off shown in `pressure reading`; alert if cold cathode is ON during IDLE mode or OFF during COLD mode |
+
+### v3.x — Natural Language Interface & Self-Learning (major milestone)
+
+This release series marks a fundamental shift: the bot moves from rigid command formats to **conversational natural language understanding**. Anyone can now interact in plain English or Chinese without memorising exact syntax.
+
+| Version | Tag | Description |
+|---------|-----|-------------|
+| 3.0.0 | [v3.0.0](https://github.com/ZhihengLi0/column_monitor/releases/tag/v3.0.0) | **Natural language understanding** — `nlp_intent.py` adds a local TF-IDF + Logistic Regression classifier. Supports 12 intents in Chinese and English via character n-grams; no API cost, runs on-device in < 10 ms. All existing exact-match commands continue to work. Entity extraction: sensor names, durations, time ranges, numeric values with unit conversion (mK→K, mbar→bar), cold/idle mode prefix, on/off |
+| 3.1.0 | [v3.1.0](https://github.com/ZhihengLi0/column_monitor/releases/tag/v3.1.0) | **Self-learning from Slack feedback** — when NLP confidence < 45%, the bot appends a correction invite in thread. User replies `"wrong, I meant pump status"` → example saved to `nlp_user_examples.jsonl` → classifier rebuilt immediately. Confirmed correct responses (`yes`/`correct`) also add positive training examples. Accuracy improves organically through normal use with no manual retraining |
+| 3.2.0 | [v3.2.0](https://github.com/ZhihengLi0/column_monitor/releases/tag/v3.2.0) | **Multi-sensor comparison plots + conversation context** — `plot P2 P5 2h` overlays multiple sensors on one chart; dual y-axis when units differ (mbar vs K). Conversation context window (10 min): `longer` extends the last plot, `plot 2h` reuses the last sensor, pronoun `那`/`it` resolves to last sensor |
 
 ---
 
