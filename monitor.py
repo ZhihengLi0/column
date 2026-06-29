@@ -824,7 +824,7 @@ def _execute_command(text: str, reply_ts: str, state: dict, conn=None, user_id: 
             elif valve:
                 _cmd_valve_status(reply_ts, conn, highlight=valve)
             else:
-                _cmd_status(reply_ts, state)
+                _cmd_status(state, reply_ts)
 
         elif intent == "daily_summary":
             from monitor import generate_summary
