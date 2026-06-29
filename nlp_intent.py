@@ -2,14 +2,35 @@
 Local NLP intent classifier for BlueFors Monitor Slack commands.
 TF-IDF (character n-grams) + Logistic Regression — runs entirely on Pi, no API needed.
 Supports Chinese and English naturally via character n-grams (no tokenizer needed).
+Self-learning: user corrections are saved to nlp_user_examples.jsonl and trigger a retrain.
 """
 import re
+import json
 import logging
+from pathlib import Path
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.linear_model import LogisticRegression
 from sklearn.pipeline import Pipeline
 
 log = logging.getLogger("monitor")
+
+USER_EXAMPLES_FILE = Path(__file__).parent / "nlp_user_examples.jsonl"
+
+# Human-readable intent labels shown to users
+INTENT_LABELS = {
+    "plot":             "plot [sensor]",
+    "pressure_reading": "pressure reading",
+    "pump_status":      "pump status",
+    "heater_status":    "heater status",
+    "change_threshold": "change threshold",
+    "reset_threshold":  "reset threshold",
+    "sentinel":         "sentinel on/off",
+    "set_mode":         "set mode (cold/idle/auto)",
+    "ack":              "acknowledge alert",
+    "daily_summary":    "daily summary",
+    "help":             "help",
+    "status":           "current status",
+}
 
 # ── Training data ─────────────────────────────────────────────────────────────
 # Each entry: (text, intent)
@@ -262,12 +283,42 @@ TRAINING_DATA = [
 
 # ── Classifier ────────────────────────────────────────────────────────────────
 
+def _load_user_examples():
+    """Load user-corrected examples from disk."""
+    if not USER_EXAMPLES_FILE.exists():
+        return []
+    examples = []
+    try:
+        with open(USER_EXAMPLES_FILE) as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                obj = json.loads(line)
+                examples.append((obj["text"], obj["intent"]))
+    except Exception as e:
+        log.warning(f"NLP: failed to load user examples: {e}")
+    return examples
+
+
+def add_example(text: str, intent: str, source: str = "user") -> None:
+    """Persist a new labeled example and invalidate the classifier cache for rebuild."""
+    try:
+        with open(USER_EXAMPLES_FILE, "a") as f:
+            f.write(json.dumps({"text": text, "intent": intent, "source": source}) + "\n")
+        _classifier._pipeline = None  # trigger rebuild on next call
+        log.info(f"NLP: learned '{text[:60]}' → {intent} [{source}]")
+    except Exception as e:
+        log.error(f"NLP: failed to save example: {e}")
+
+
 class IntentClassifier:
     def __init__(self):
         self._pipeline = None
 
     def _build(self):
-        texts, labels = zip(*TRAINING_DATA)
+        all_data = list(TRAINING_DATA) + _load_user_examples()
+        texts, labels = zip(*all_data)
         pipe = Pipeline([
             ("tfidf", TfidfVectorizer(
                 analyzer="char_wb",
@@ -282,6 +333,8 @@ class IntentClassifier:
             )),
         ])
         pipe.fit(texts, labels)
+        user_count = len(all_data) - len(TRAINING_DATA)
+        log.info(f"NLP: trained on {len(all_data)} examples ({user_count} user-learned)")
         return pipe
 
     def predict(self, text: str):

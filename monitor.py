@@ -391,9 +391,105 @@ def check_acknowledgements(state: dict):
             del pending[sensor]
             log.info(f"{sensor} acknowledged — silenced 10 min")
 
+# ── NLP self-learning: check thread replies for corrections ───────────────────
+
+_CONFIRM_WORDS = {"yes", "correct", "right", "yep", "yeah", "yup", "对", "是", "是的", "对的"}
+_DENY_WORDS    = {"wrong", "no", "nope", "not right", "incorrect", "不对", "错", "错了", "不是"}
+
+def check_nlp_feedback(state: dict):
+    """Poll thread replies to recent NLP responses; learn from corrections."""
+    pending = state.get("nlp_pending", [])
+    if not pending:
+        return
+
+    try:
+        from nlp_intent import classify_command, add_example, INTENT_LABELS
+    except ImportError:
+        return
+
+    now = datetime.now().timestamp()
+    still_pending = []
+
+    for entry in pending:
+        # Expire after 10 minutes
+        if now - entry.get("created", 0) > 600:
+            continue
+
+        data = slack_get("conversations.replies",
+                         {"channel": config.SLACK_CHANNEL, "ts": entry["user_msg_ts"]})
+        if not data.get("ok"):
+            still_pending.append(entry)
+            continue
+
+        msgs = data.get("messages", [])
+        bot_ts = entry.get("bot_msg_ts") or entry["user_msg_ts"]
+        # Only look at user replies AFTER the bot's hint message
+        user_replies = [
+            m for m in msgs[1:]
+            if m.get("ts", "0") > bot_ts
+            and m.get("user") != config.SLACK_BOT_USER_ID
+        ]
+        if not user_replies:
+            still_pending.append(entry)
+            continue
+
+        raw  = user_replies[-1].get("text", "").strip()
+        reply = re.sub(r"<@[A-Z0-9]+>", "", raw).strip().lower()
+
+        if any(reply.startswith(w) for w in _CONFIRM_WORDS):
+            add_example(entry["input_text"], entry["intent"], source="confirmed")
+            send_slack("✅ Got it — I'll remember that phrasing next time.",
+                       color="good", thread_ts=entry["user_msg_ts"])
+
+        elif any(w in reply for w in _DENY_WORDS):
+            # Try to parse the correct intent from the denial message
+            # e.g. "wrong, I meant pump status"  or  "not right, heater status"
+            stripped = re.sub(
+                r"^(?:wrong|no|nope|not right|incorrect|不对|错了)[,\s]*(?:i meant?|应该是|是)?\s*",
+                "", reply).strip()
+            if stripped:
+                correct_intent, _, c2 = classify_command(stripped)
+                if c2 > 0.25 and correct_intent != entry["intent"]:
+                    add_example(entry["input_text"], correct_intent, source="corrected")
+                    label = INTENT_LABELS.get(correct_intent, correct_intent)
+                    send_slack(
+                        f"✅ Got it — I'll treat that as *{label}* next time.",
+                        color="good", thread_ts=entry["user_msg_ts"])
+                else:
+                    if not entry.get("asked_correction"):
+                        intents_list = "\n".join(
+                            f"• `{v}`" for v in INTENT_LABELS.values())
+                        send_slack(
+                            f"Understood, I got that wrong. What did you mean?\n"
+                            f"Reply with the correct action — for example:\n{intents_list}",
+                            thread_ts=entry["user_msg_ts"])
+                        entry["asked_correction"] = True
+                        still_pending.append(entry)
+            else:
+                if not entry.get("asked_correction"):
+                    send_slack(
+                        "Got it, that was wrong. What did you mean?\n"
+                        "Reply with the correct command "
+                        "(e.g. `pump status`, `plot P2`, `heater status`, `daily summary`)",
+                        thread_ts=entry["user_msg_ts"])
+                    entry["asked_correction"] = True
+                    still_pending.append(entry)
+
+        else:
+            # User replied with something else — try to infer correct intent
+            correct_intent, _, c2 = classify_command(reply)
+            if c2 > 0.35 and correct_intent != entry["intent"]:
+                add_example(entry["input_text"], correct_intent, source="inferred")
+                log.info(f"NLP inferred correction: '{entry['input_text']}' → {correct_intent}")
+            # Don't keep nagging — drop from pending
+
+    state["nlp_pending"] = still_pending
+
+
 # ── Slack polling: commands ───────────────────────────────────────────────────
 
 def check_commands(state: dict, conn=None):
+    check_nlp_feedback(state)
     last_ts = state.get("last_slack_ts", "0")
     data = slack_get("conversations.history",
                      {"channel": config.SLACK_CHANNEL, "oldest": last_ts, "limit": 50})
@@ -622,7 +718,7 @@ def _execute_command(text: str, reply_ts: str, state: dict, conn=None):
 
     # ── NLP fallback: natural language understanding ──────────────────────────
     try:
-        from nlp_intent import classify_command
+        from nlp_intent import classify_command, INTENT_LABELS, add_example
         intent, ent, conf = classify_command(text)
         log.info(f"NLP: intent={intent} conf={conf:.2f} entities={ent}")
 
@@ -632,6 +728,17 @@ def _execute_command(text: str, reply_ts: str, state: dict, conn=None):
                 "Try natural language or type `help` to see all commands.",
                 thread_ts=reply_ts)
             return
+
+        # Track this NLP interaction for self-learning feedback
+        _nlp_track = {
+            "input_text":   text,
+            "intent":       intent,
+            "conf":         conf,
+            "user_msg_ts":  reply_ts,
+            "bot_msg_ts":   None,   # filled in after send_slack returns ts
+            "created":      datetime.now().timestamp(),
+            "asked_correction": False,
+        }
 
         if intent == "plot":
             sensor_key = None
@@ -759,6 +866,21 @@ def _execute_command(text: str, reply_ts: str, state: dict, conn=None):
                 f"I didn't understand: `{text}`\n"
                 "Try natural language or type `help` to see all commands.",
                 thread_ts=reply_ts)
+            return
+
+        # ── Append confidence hint and store for feedback tracking ───────────
+        # For uncertain predictions, tell the user what we guessed so they can
+        # correct it by replying "wrong, I meant pump status" in the thread.
+        if conf < 0.45:
+            label = INTENT_LABELS.get(intent, intent)
+            hint_ts = send_slack(
+                f"_(Auto-detected as: *{label}*. "
+                f"Reply \"wrong\" in this thread if incorrect.)_",
+                color="#888888", thread_ts=reply_ts)
+            _nlp_track["bot_msg_ts"] = hint_ts or reply_ts
+            state.setdefault("nlp_pending", []).append(_nlp_track)
+            # Keep only last 20 pending entries
+            state["nlp_pending"] = state["nlp_pending"][-20:]
 
     except Exception as e:
         log.error(f"NLP dispatch error: {e}")
