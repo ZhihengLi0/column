@@ -1,0 +1,6 @@
+{"text": "p3 trend", "intent": "plot", "source": "confirmed"}
+{"text": "p3 tred", "intent": "plot", "source": "confirmed"}
+{"text": "can you plot p2 trend for recent 5.35h", "intent": "plot", "source": "confirmed"}
+{"text": "what status", "intent": "status", "source": "confirmed"}
+{"text": "change P5 IDLE mode max threshold to 800 mbar", "intent": "change_threshold", "source": "confirmed"}
+{"text": "check 4k", "intent": "pump_status", "source": "confirmed"}
