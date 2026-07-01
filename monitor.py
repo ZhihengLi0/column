@@ -558,6 +558,10 @@ def _execute_command(text: str, reply_ts: str, state: dict, conn=None, user_id: 
         _cmd_pressure(reply_ts, conn)
         return
 
+    if re.fullmatch(r"temperature\s+reading", lower):
+        _cmd_temperature(reply_ts, conn)
+        return
+
     if re.fullmatch(r"pump\s+status", lower):
         _cmd_pump_status(reply_ts, conn)
         return
@@ -573,17 +577,21 @@ def _execute_command(text: str, reply_ts: str, state: dict, conn=None, user_id: 
     # ── Plot parser: handles 1 or multiple sensors + time range or duration ──
     if lower.startswith("plot"):
         _TIME_PAT_RE = re.compile(r"^(\d{6}_\d{4})$")
-        _DUR_RE      = re.compile(r"^(\d+)(h|min)$")
+        _DUR_RE      = re.compile(r"(?<![.\d])(\d+(?:\.\d+)?)\s*(h(?:ours?)?|min(?:utes?)?)")
         tokens = lower.split()[1:]   # everything after "plot"
         sensor_keys, time_tokens, minutes = [], [], 30
+        log.info(f"Plot parser: raw_text={repr(text)!r} lower={repr(lower)!r} tokens={tokens}")
         for tok in tokens:
             if _TIME_PAT_RE.fullmatch(tok):
                 time_tokens.append(tok)
-            elif _DUR_RE.fullmatch(tok):
-                dm = _DUR_RE.fullmatch(tok)
-                minutes = int(dm.group(1)) * (60 if dm.group(2) == "h" else 1)
             elif tok.upper() in PLOT_SENSORS:
                 sensor_keys.append(tok.upper())
+        # Duration: search across full token string to handle "recent 2 hours", "2h", etc.
+        remaining = " ".join(t for t in tokens
+                             if t.upper() not in PLOT_SENSORS and not _TIME_PAT_RE.fullmatch(t))
+        dur_m = _DUR_RE.search(remaining)
+        if dur_m:
+            minutes = round(float(dur_m.group(1)) * (60 if dur_m.group(2).startswith("h") else 1))
 
         if not sensor_keys and ctx_valid and ctx.get("sensor_key"):
             sensor_keys = [ctx["sensor_key"]]   # "plot 12h" uses last sensor
@@ -802,6 +810,9 @@ def _execute_command(text: str, reply_ts: str, state: dict, conn=None, user_id: 
                 _cmd_plot_multi(sensor_keys_nlp, reply_ts, conn, minutes=plot_min)
             _update_ctx(sensor_key=sensor_keys_nlp[-1], intent="plot", minutes=plot_min)
 
+        elif intent == "temperature_reading":
+            _cmd_temperature(reply_ts, conn)
+
         elif intent == "pressure_reading":
             _cmd_pressure(reply_ts, conn)
 
@@ -931,7 +942,7 @@ def _execute_command(text: str, reply_ts: str, state: dict, conn=None, user_id: 
             label = INTENT_LABELS.get(intent, intent)
             hint_ts = send_slack(
                 f"_(Auto-detected as: *{label}*. "
-                f"Reply \"wrong\" in this thread if incorrect.)_",
+                f"Reply \"yes\" to confirm or \"wrong\" if incorrect — I'll learn from it.)_",
                 color="#888888", thread_ts=reply_ts)
             _nlp_track["bot_msg_ts"] = hint_ts or reply_ts
             state.setdefault("nlp_pending", []).append(_nlp_track)
@@ -1023,6 +1034,11 @@ def _cmd_plot(sensor_key: str, reply_ts: str, conn=None,
     if is_pressure:
         values = [v * 1000 for v in values]
         unit   = "mbar"
+
+    # Auto-convert to mK when all values are sub-kelvin (MXC, Still in cold operation)
+    if unit == "K" and max(values) < 1.0:
+        values = [v * 1000 for v in values]
+        unit   = "mK"
 
     # Wider figure for multi-hour ranges
     duration_h = (t_to - t_from).total_seconds() / 3600
@@ -1327,6 +1343,39 @@ def _cmd_pressure(reply_ts: str, conn=None):
     log.info("Sent pressure reading reply to Slack")
 
 
+def _cmd_temperature(reply_ts: str, conn=None):
+    TEMP_SENSORS = [
+        ("MXC_TEMPERATURE",     "MXC",   True),
+        ("STILL_TEMPERATURE",   "Still", True),
+        ("4K_TEMPERATURE",      "4K",    False),
+        ("50K_TEMPERATURE",     "50K",   False),
+        ("B1A_TEMPERATURE",     "B1A",   False),
+        ("B2_TEMPERATURE",      "B2",    False),
+    ]
+    if conn is None:
+        send_slack("Cannot read temperatures: no database connection.", thread_ts=reply_ts)
+        return
+
+    lines = [":thermometer: *Current Temperature Readings*\n"]
+    with conn.cursor() as cur:
+        for mapping, label, prefer_mk in TEMP_SENSORS:
+            cur.execute(
+                "SELECT value, time FROM public.double_value_change_events "
+                "WHERE mapping = %s ORDER BY time DESC LIMIT 1", (mapping,))
+            row = cur.fetchone()
+            if not row:
+                lines.append(f"  *{label}*: _no data_")
+                continue
+            v, ts = float(row[0]), str(row[1])[:19]
+            if prefer_mk and v < 1.0:
+                lines.append(f"  *{label}*: `{v*1000:.2f} mK`  _(at {ts})_")
+            else:
+                lines.append(f"  *{label}*: `{v:.4g} K`  _(at {ts})_")
+
+    send_slack("\n".join(lines), color="#2196F3", thread_ts=reply_ts)
+    log.info("Sent temperature reading reply to Slack")
+
+
 def _cmd_help(reply_ts=None):
     send_slack(
         "*BlueFors Monitor — Commands*\n\n"
@@ -1334,6 +1383,7 @@ def _cmd_help(reply_ts=None):
         "  React ✅  👏  👍  🤙 on the alert, or reply `ok` / `OK` in the thread\n\n"
         "*@mention commands* (`@BlueFors-Alert <command>`):\n"
         "`help` — show this message\n"
+        "`temperature reading` — show current temperatures (MXC, Still, 4K, 50K, B1A, B2)\n"
         "`pressure reading` — show latest P1–P7 pressure values\n"
         "`pump status` — show on/off, power, speed for all 5 pumps (B1A, B2, R1A, R2, COM)\n"
         "`heater status` — show on/off and power for Still/MXC heat switches and heaters\n"

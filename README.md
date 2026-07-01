@@ -791,6 +791,7 @@ React to any alert message with **✅ 👏 👍 🤙**, or reply `ok` / `OK` in 
 | Command | Description |
 |---|---|
 | `help` | Show all available commands |
+| `temperature reading` | Current temperatures — MXC, Still, 4K, 50K, B1A, B2 (auto-converts to mK when cold) |
 | `pressure reading` | Latest P1–P7 pressures + Cold Cathode ON/OFF |
 | `pump status` | B1A, B2 (turbo), R1A, R2 (scroll), COM compressor — on/off, speed, power, temp |
 | `heater status` | Still/MXC heat switches and heaters — on/off and power |
@@ -804,13 +805,15 @@ React to any alert message with **✅ 👏 👍 🤙**, or reply `ok` / `OK` in 
 | Command | Description |
 |---|---|
 | `plot <sensor>` | Plot last 30 min as image (sends PNG to Slack) |
-| `plot <sensor> 12h` | Plot last N hours (`2h`, `6h`, `12h`, `24h`, …) |
+| `plot <sensor> 2h` | Plot last N hours — also accepts `2.5h`, `recent 2 hours`, natural language |
 | `plot <sensor> 30min` | Plot last N minutes |
 | `plot <sensor> YYMMDD_HHMM YYMMDD_HHMM` | Plot a specific time range (CDT) |
 | `plot <s1> <s2> 2h` | **Multi-sensor comparison** — overlay two or more sensors on one chart |
 | `plot <s1> <s2> <s3> 12h` | Up to ~6 sensors; dual y-axis when units differ (e.g. mbar + K) |
 
-Available sensors: `P1`–`P7`, `MXC`, `STILL`, `4K`, `50K`, `FLOW`
+Available sensors: `P1`–`P7`, `MXC`, `STILL`, `4K`, `50K`, `B1A`, `B2`, `FLOW`
+
+Temperature plots auto-convert to mK when all values are below 1 K (e.g. MXC at base temperature).
 
 **Context shortcuts** (work within 10 minutes of the previous command):
 
@@ -905,6 +908,7 @@ The bot automatically sends a 12-hour summary to Slack at **8:00 AM** and **8:00
 ### Examples
 
 ```
+@BlueFors-Alert temperature reading
 @BlueFors-Alert pressure reading
 @BlueFors-Alert pump status
 @BlueFors-Alert heater status
@@ -972,7 +976,7 @@ When a device name is detected (R2, R1A, B1A, COM, V112, V106, …), the bot rou
 
 When the NLP classifier is uncertain (confidence < 45%), the bot appends:
 
-> *(Auto-detected as: pump status. Reply "wrong" if incorrect.)*
+> *(Auto-detected as: pump status. Reply "yes" to confirm or "wrong" if incorrect — I'll learn from it.)*
 
 **To correct a misclassification**, reply in the same Slack thread:
 
@@ -1271,6 +1275,7 @@ This release series marks a fundamental shift: the bot moves from rigid command 
 | 3.1.0 | [v3.1.0](https://github.com/ZhihengLi0/column_monitor/releases/tag/v3.1.0) | **Self-learning from Slack feedback** — when NLP confidence < 45%, the bot appends a correction invite in thread. User replies `"wrong, I meant pump status"` → example saved to `nlp_user_examples.jsonl` → classifier rebuilt immediately. Confirmed correct responses (`yes`/`correct`) also add positive training examples. Accuracy improves organically through normal use with no manual retraining |
 | 3.2.0 | [v3.2.0](https://github.com/ZhihengLi0/column_monitor/releases/tag/v3.2.0) | **Multi-sensor comparison plots + conversation context** — `plot P2 P5 2h` overlays multiple sensors on one chart; dual y-axis when units differ (mbar vs K). Conversation context window (10 min): `longer` extends the last plot, `plot 2h` reuses the last sensor, `plot it` resolves to last sensor |
 | 3.3.0 | [v3.3.0](https://github.com/ZhihengLi0/column_monitor/releases/tag/v3.3.0) | **Valve status + device-specific NLP routing** — `valve status` command shows all 25 valves grouped open/closed with last-change timestamps; automatic Slack alerts on V112/V113/V114 state changes (active in both COLD and IDLE modes). NLP classifier upgraded to 14 intents and now understands device-specific queries: "what is the status of R2", "is V112 open" — routes to `pump status` or `valve status` and highlights the queried device first in the reply |
+| 3.4.0 | — | **Temperature reading + plot improvements** — `temperature reading` command shows MXC/Still/4K/50K/B1A/B2 with automatic mK conversion when cold. Temperature plots auto-convert y-axis to mK when all values < 1 K. Plot duration parser now accepts natural language ("recent 2 hours", "2.15h", "last 30 minutes"). NLP confirmation: replying `yes` to hint message saves a positive training example. Fixed daily summary cron (was firing at 1 AM/1 PM CDT instead of 8 AM/8 PM CDT) |
 
 ---
 

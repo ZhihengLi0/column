@@ -27,10 +27,11 @@ INTENT_LABELS = {
     "reset_threshold":  "reset threshold",
     "sentinel":         "sentinel on/off",
     "set_mode":         "set mode (cold/idle/auto)",
-    "ack":              "acknowledge alert",
-    "daily_summary":    "daily summary",
-    "help":             "help",
-    "status":           "current status",
+    "ack":                 "acknowledge alert",
+    "daily_summary":       "daily summary",
+    "help":                "help",
+    "status":              "current status",
+    "temperature_reading": "temperature reading",
 }
 
 # ── Training data ─────────────────────────────────────────────────────────────
@@ -71,6 +72,32 @@ TRAINING_DATA = [
     ("压力图P3",                              "plot"),
     ("plot P1 260620_0000 260622_1200",       "plot"),
     ("show still temp from yesterday",        "plot"),
+    ("plot 4K last 2 hours",                  "plot"),
+    ("show me MXC trend",                     "plot"),
+    ("50K temperature last hour",             "plot"),
+    ("Still temperature recent 3 hours",      "plot"),
+    ("trend of MXC 2h",                       "plot"),
+    ("i want the trend MXC recent 1 hour",    "plot"),
+    ("4K plate temperature graph",            "plot"),
+    ("B1A temperature last 30 min",           "plot"),
+    ("B2 temp chart",                         "plot"),
+
+    # ── temperature_reading ───────────────────────────────────────────────────
+    ("temperature reading",                   "temperature_reading"),
+    ("show all temperatures",                 "temperature_reading"),
+    ("what is the temperature",               "temperature_reading"),
+    ("current temperature values",            "temperature_reading"),
+    ("check temperature",                     "temperature_reading"),
+    ("give me temperature readings",          "temperature_reading"),
+    ("temperature status",                    "temperature_reading"),
+    ("all temperature sensors",               "temperature_reading"),
+    ("MXC Still 4K 50K",                      "temperature_reading"),
+    ("what is MXC temperature now",           "temperature_reading"),
+    ("show me the current temperatures",      "temperature_reading"),
+    ("how cold is it",                        "temperature_reading"),
+    ("what temp is the MXC",                  "temperature_reading"),
+    ("temperature now",                       "temperature_reading"),
+    ("check MXC temp",                        "temperature_reading"),
 
     # ── pressure_reading ──────────────────────────────────────────────────────
     ("pressure reading",                      "pressure_reading"),
