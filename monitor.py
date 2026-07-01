@@ -393,8 +393,14 @@ def check_acknowledgements(state: dict):
 
 # ── NLP self-learning: check thread replies for corrections ───────────────────
 
-_CONFIRM_WORDS = {"yes", "correct", "right", "yep", "yeah", "yup", "对", "是", "是的", "对的"}
-_DENY_WORDS    = {"wrong", "no", "nope", "not right", "incorrect", "不对", "错", "错了", "不是"}
+_CONFIRM_RE = re.compile(
+    r"\b(yes|yep|yeah|yup|correct|right|sure|ok|okay|confirmed|"
+    r"you'?re right|you are right|that'?s right|that is right|"
+    r"对|是|是的|对的|没错|正确)\b"
+)
+_DENY_RE = re.compile(
+    r"\b(wrong|no|nope|not right|incorrect|不对|错|错了|不是)\b"
+)
 
 def check_nlp_feedback(state: dict, conn=None):
     """Poll thread replies to recent NLP responses; learn from corrections."""
@@ -425,6 +431,7 @@ def check_nlp_feedback(state: dict, conn=None):
             entry["intent"]           = correct_intent
             entry["correction_text"]  = correction_text
             entry["awaiting_confirm"] = True
+            entry["retry_count"]      = 0  # reset on each successful proposal
             log.info(f"NLP proposed: '{entry['input_text']}' → {correct_intent} (conf={c2:.2f})")
             return True
         return False
@@ -461,7 +468,7 @@ def check_nlp_feedback(state: dict, conn=None):
         entry["last_seen_ts"] = next_msg["ts"]
 
         # ── "yes" / confirm ───────────────────────────────────────────────────
-        if any(reply.startswith(w) for w in _CONFIRM_WORDS):
+        if _CONFIRM_RE.search(reply) and not _DENY_RE.search(reply):
             src  = "corrected" if entry.get("orig_intent") else "confirmed"
             add_example(entry["input_text"], entry["intent"],
                         source=src, from_intent=entry.get("orig_intent"))
@@ -473,7 +480,7 @@ def check_nlp_feedback(state: dict, conn=None):
                 _execute_command(run_text, entry["user_msg_ts"], state, conn)
 
         # ── "wrong" / deny ────────────────────────────────────────────────────
-        elif any(w in reply for w in _DENY_WORDS):
+        elif _DENY_RE.search(reply):
             # Reset awaiting_confirm so the user can give a new correction
             entry["awaiting_confirm"] = False
             entry["correction_text"]  = None
