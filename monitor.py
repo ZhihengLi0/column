@@ -457,8 +457,11 @@ def check_nlp_feedback(state: dict, conn=None):
         # ── "yes" / confirm ───────────────────────────────────────────────────
         if any(reply.startswith(w) for w in _CONFIRM_WORDS):
             add_example(entry["input_text"], entry["intent"], source="confirmed")
-            send_slack("✅ Got it — I'll remember that phrasing next time.",
+            label = INTENT_LABELS.get(entry["intent"], entry["intent"])
+            send_slack(f"✅ Got it — running *{label}* now and I'll remember this next time.",
                        color="good", thread_ts=entry["user_msg_ts"])
+            if conn:
+                _execute_command(entry["input_text"], entry["user_msg_ts"], state, conn)
 
         # ── "wrong" / deny ────────────────────────────────────────────────────
         elif any(w in reply for w in _DENY_WORDS):
