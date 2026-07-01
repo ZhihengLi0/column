@@ -1592,11 +1592,18 @@ def check_sensor_thresholds(conn, state: dict) -> list:
         value = row["value"]
         ts    = row["time"]
         max_v, min_v = get_threshold(name, state)
-        _, _, desc = thresholds[name]
+        entry = thresholds[name]
+        is_max = max_v is not None and value > max_v
+        is_min = min_v is not None and value < min_v
 
-        if not ((max_v is not None and value > max_v) or
-                (min_v is not None and value < min_v)):
+        if not (is_max or is_min):
             continue
+
+        # Support 4-element tuples: (max_v, min_v, max_desc, min_desc)
+        if len(entry) >= 4:
+            desc = entry[3] if is_min else entry[2]
+        else:
+            desc = entry[2]
 
         ack_until = acked.get(name)
         if ack_until and datetime.fromisoformat(ack_until) > now:
