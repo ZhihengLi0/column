@@ -32,6 +32,8 @@ INTENT_LABELS = {
     "help":                "help",
     "status":              "current status",
     "temperature_reading": "temperature reading",
+    "pause_alerts":        "pause alerts",
+    "resume_alerts":       "resume alerts",
 }
 
 # ── Training data ─────────────────────────────────────────────────────────────
@@ -264,18 +266,40 @@ TRAINING_DATA = [
     ("turn off sentinel",                     "sentinel"),
     ("enable CS2 alerts",                     "sentinel"),
     ("disable CS2 alerts",                    "sentinel"),
-    ("pause alerts",                          "sentinel"),
-    ("resume alerts",                         "sentinel"),
-    ("stop forwarding alerts",                "sentinel"),
     ("开启预警",                              "sentinel"),
     ("关闭预警",                              "sentinel"),
-    ("暂停预警",                              "sentinel"),
-    ("恢复预警",                              "sentinel"),
     ("CS2报警开",                             "sentinel"),
     ("CS2报警关",                             "sentinel"),
     ("停止预警转发",                          "sentinel"),
     ("打开sentinel",                          "sentinel"),
     ("关掉sentinel",                          "sentinel"),
+
+    # ── pause_alerts ──────────────────────────────────────────────────────────
+    ("pause alerts",                          "pause_alerts"),
+    ("stop all alerts",                       "pause_alerts"),
+    ("mute all alerts",                       "pause_alerts"),
+    ("silence all alerts",                    "pause_alerts"),
+    ("stop sending alerts",                   "pause_alerts"),
+    ("disable all alerts",                    "pause_alerts"),
+    ("turn off all alerts",                   "pause_alerts"),
+    ("no more alerts",                        "pause_alerts"),
+    ("stop notifications",                    "pause_alerts"),
+    ("暂停所有报警",                          "pause_alerts"),
+    ("停止报警",                              "pause_alerts"),
+    ("关掉所有报警",                          "pause_alerts"),
+    ("暂停推送",                              "pause_alerts"),
+
+    # ── resume_alerts ─────────────────────────────────────────────────────────
+    ("resume alerts",                         "resume_alerts"),
+    ("enable all alerts",                     "resume_alerts"),
+    ("turn on all alerts",                    "resume_alerts"),
+    ("restart alerts",                        "resume_alerts"),
+    ("resume notifications",                  "resume_alerts"),
+    ("start sending alerts again",            "resume_alerts"),
+    ("unmute alerts",                         "resume_alerts"),
+    ("恢复报警",                              "resume_alerts"),
+    ("重新开启报警",                          "resume_alerts"),
+    ("恢复推送",                              "resume_alerts"),
 
     # ── set_mode ──────────────────────────────────────────────────────────────
     ("set mode cold",                         "set_mode"),

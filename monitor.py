@@ -620,6 +620,22 @@ def _execute_command(text: str, reply_ts: str, state: dict, conn=None, user_id: 
             _update_ctx(sensor_key=sensor_keys[-1], intent="plot", minutes=minutes)
         return
 
+    m = re.fullmatch(r"pause\s+alerts?", lower)
+    if m:
+        state["alerts_paused"] = True
+        send_slack(":no_bell: *All alerts paused.* Monitoring continues in the background.\n"
+                   "Send `resume alerts` to re-enable.", color="warning", thread_ts=reply_ts)
+        log.info("All alerts paused via Slack")
+        return
+
+    m = re.fullmatch(r"resume\s+alerts?", lower)
+    if m:
+        state["alerts_paused"] = False
+        send_slack(":bell: *Alerts resumed.* All threshold and system alerts are active again.",
+                   color="good", thread_ts=reply_ts)
+        log.info("Alerts resumed via Slack")
+        return
+
     m = re.fullmatch(r"sentinel\s+(on|off)", lower)
     if m:
         enabled = m.group(1) == "on"
@@ -812,6 +828,18 @@ def _execute_command(text: str, reply_ts: str, state: dict, conn=None, user_id: 
 
         elif intent == "temperature_reading":
             _cmd_temperature(reply_ts, conn)
+
+        elif intent == "pause_alerts":
+            state["alerts_paused"] = True
+            send_slack(":no_bell: *All alerts paused.* Monitoring continues in the background.\n"
+                       "Send `resume alerts` to re-enable.", color="warning", thread_ts=reply_ts)
+            log.info("All alerts paused via Slack (NLP)")
+
+        elif intent == "resume_alerts":
+            state["alerts_paused"] = False
+            send_slack(":bell: *Alerts resumed.* All threshold and system alerts are active again.",
+                       color="good", thread_ts=reply_ts)
+            log.info("Alerts resumed via Slack (NLP)")
 
         elif intent == "pressure_reading":
             _cmd_pressure(reply_ts, conn)
@@ -1397,6 +1425,8 @@ def _cmd_help(reply_ts=None):
         "`list` — sensor numbers, short names, current thresholds\n"
         "`status` — active overrides and silenced sensors\n"
         "`ack` — silence ALL sensors for 10 min\n"
+        "`pause alerts` — stop ALL alert messages (monitoring still runs in background)\n"
+        "`resume alerts` — re-enable all alerts\n"
         "`sentinel on` — resume CS2 alert forwarding\n"
         "`sentinel off` — pause CS2 alert forwarding\n"
         "`change <sensor> to <value> for ever` — override threshold for *current* mode\n"
@@ -2114,6 +2144,12 @@ def run():
         conn.close()
 
     # 4. Send alerts and track message timestamps for ack tracking
+    if state.get("alerts_paused"):
+        save_state(state)
+        if all_alerts:
+            log.info(f"Alerts paused — suppressed {len(all_alerts)} alert(s)")
+        return
+
     pending = state.setdefault("pending_alert_msgs", {})
     for sensor_name, msg in all_alerts:
         ts = send_slack(msg)
