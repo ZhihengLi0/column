@@ -658,7 +658,7 @@ def _execute_command(text: str, reply_ts: str, state: dict, conn=None, user_id: 
                              if t.upper() not in PLOT_SENSORS and not _TIME_PAT_RE.fullmatch(t))
         dur_m = _DUR_RE.search(remaining)
         if dur_m:
-            minutes = round(float(dur_m.group(1)) * (60 if dur_m.group(2).startswith("h") else 1))
+            minutes = float(dur_m.group(1)) * (60 if dur_m.group(2).startswith("h") else 1)
 
         if not sensor_keys and ctx_valid and ctx.get("sensor_key"):
             sensor_keys = [ctx["sensor_key"]]   # "plot 12h" uses last sensor
@@ -1094,7 +1094,7 @@ def _parse_plot_time(s: str) -> datetime | None:
 
 
 def _cmd_plot(sensor_key: str, reply_ts: str, conn=None,
-              minutes: int = 30, start: datetime = None, end: datetime = None):
+              minutes: float = 30, start: datetime = None, end: datetime = None):
     if conn is None:
         send_slack("Cannot plot: no database connection.", thread_ts=reply_ts)
         return
@@ -1114,7 +1114,8 @@ def _cmd_plot(sensor_key: str, reply_ts: str, conn=None,
     else:
         t_to   = datetime.now(timezone.utc)
         t_from = t_to - timedelta(minutes=minutes)
-        range_label = f"last {minutes} min"
+        mins_label = f"{minutes:g}"
+        range_label = f"last {mins_label} min"
 
     with conn.cursor() as cur:
         cur.execute(
@@ -1186,7 +1187,7 @@ def _cmd_plot(sensor_key: str, reply_ts: str, conn=None,
 
 
 def _cmd_plot_multi(sensor_keys: list, reply_ts: str, conn=None,
-                    minutes: int = 30, start: datetime = None, end: datetime = None):
+                    minutes: float = 30, start: datetime = None, end: datetime = None):
     """Plot 2+ sensors on one figure; dual y-axis when units differ."""
     if conn is None:
         send_slack("Cannot plot: no database connection.", thread_ts=reply_ts)
@@ -1204,7 +1205,8 @@ def _cmd_plot_multi(sensor_keys: list, reply_ts: str, conn=None,
     else:
         t_to   = datetime.now(timezone.utc)
         t_from = t_to - timedelta(minutes=minutes)
-        range_label = f"last {minutes} min"
+        mins_label  = f"{minutes:g}"
+        range_label = f"last {mins_label} min"
 
     # Fetch and convert each sensor's data
     sensor_data = {}
