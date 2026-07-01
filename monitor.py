@@ -414,7 +414,7 @@ def check_nlp_feedback(state: dict, conn=None):
         """Classify correction_text; save example + optionally execute. Returns True if understood."""
         correct_intent, _, c2 = classify_command(correction_text)
         if c2 > 0.25:
-            add_example(input_text, correct_intent, source="corrected")
+            add_example(input_text, correct_intent, source="corrected", from_intent=orig_intent)
             label = INTENT_LABELS.get(correct_intent, correct_intent)
             log.info(f"NLP correction: '{input_text}' → {correct_intent} (conf={c2:.2f})")
             if execute and conn:

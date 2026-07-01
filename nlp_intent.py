@@ -405,11 +405,14 @@ def _load_user_examples():
     return examples
 
 
-def add_example(text: str, intent: str, source: str = "user") -> None:
+def add_example(text: str, intent: str, source: str = "user", from_intent: str = None) -> None:
     """Persist a new labeled example and invalidate the classifier cache for rebuild."""
     try:
+        entry = {"text": text, "intent": intent, "source": source}
+        if from_intent and from_intent != intent:
+            entry["from_intent"] = from_intent
         with open(USER_EXAMPLES_FILE, "a") as f:
-            f.write(json.dumps({"text": text, "intent": intent, "source": source}) + "\n")
+            f.write(json.dumps(entry) + "\n")
         _classifier._pipeline = None  # trigger rebuild on next call
         log.info(f"NLP: learned '{text[:60]}' → {intent} [{source}]")
     except Exception as e:
