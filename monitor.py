@@ -644,7 +644,7 @@ def _execute_command(text: str, reply_ts: str, state: dict, conn=None, user_id: 
     # ── Plot parser: handles 1 or multiple sensors + time range or duration ──
     if lower.startswith("plot"):
         _TIME_PAT_RE = re.compile(r"^(\d{6}_\d{4})$")
-        _DUR_RE      = re.compile(r"(?<![.\d])(\d+(?:\.\d+)?)\s*(h(?:ours?)?|min(?:utes?)?)")
+        _DUR_RE      = re.compile(r"(?<![.\d])(\d+(?:\.\d+)?)\s*(h(?:ours?)?|m(?:in(?:utes?)?)?)")
         tokens = lower.split()[1:]   # everything after "plot"
         sensor_keys, time_tokens, minutes = [], [], 30
         log.info(f"Plot parser: raw_text={repr(text)!r} lower={repr(lower)!r} tokens={tokens}")
