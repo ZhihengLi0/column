@@ -417,7 +417,7 @@ def _git_push_learned(text: str, intent: str, source: str, from_intent: str = No
         msg = f'NLP: confirmed "{text[:60]}" → [{label}]'
     else:
         msg = f'NLP: learned "{text[:60]}" → [{label}] [{source}]'
-    full_msg = msg + "\n\nCo-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>"
+    full_msg = msg
     repo = str(USER_EXAMPLES_FILE.parent)
     try:
         subprocess.run(["git", "add", "nlp_user_examples.jsonl"], cwd=repo, check=True,
