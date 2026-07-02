@@ -1,5 +1,6 @@
 __pycache__/
 *.log
 *.json
+*.lock
 *.pyc
 config_secret.py

@@ -27,8 +27,10 @@ Slack commands (@BlueFors-Alert <command>):
 
 import re
 import sys
+import os
 import time
 import json
+import fcntl
 import logging
 import tempfile
 import requests
@@ -145,13 +147,22 @@ def _empty_state() -> dict:
     }
 
 
+_STATE_LOCK_FILE = STATE_FILE.with_suffix(".lock")
+
+
 def load_state() -> dict:
     base = _empty_state()
-    if STATE_FILE.exists():
-        text = STATE_FILE.read_text().strip()
-        if text:
-            saved = json.loads(text)
-            base.update(saved)
+    try:
+        with open(_STATE_LOCK_FILE, "a") as lf:
+            fcntl.flock(lf, fcntl.LOCK_SH)   # shared: blocks only during a write
+            if STATE_FILE.exists():
+                text = STATE_FILE.read_text().strip()
+                if text:
+                    base.update(json.loads(text))
+    except json.JSONDecodeError as e:
+        log.error(f"State file corrupted ({e}), starting fresh")
+    except Exception as e:
+        log.error(f"load_state error ({e}), starting fresh")
     # Migrate legacy flat threshold_overrides into mode-specific dicts
     legacy = base.get("threshold_overrides", {})
     if legacy:
@@ -163,10 +174,11 @@ def load_state() -> dict:
 
 
 def save_state(state: dict):
-    import os
-    tmp = STATE_FILE.with_suffix(f".{os.getpid()}.tmp")
-    tmp.write_text(json.dumps(state, default=str, indent=2))
-    tmp.replace(STATE_FILE)  # atomic rename; PID suffix avoids collision between processes
+    with open(_STATE_LOCK_FILE, "a") as lf:
+        fcntl.flock(lf, fcntl.LOCK_EX)   # exclusive: no other read or write during save
+        tmp = STATE_FILE.with_suffix(f".{os.getpid()}.tmp")
+        tmp.write_text(json.dumps(state, default=str, indent=2))
+        tmp.replace(STATE_FILE)
 
 # ── DB ────────────────────────────────────────────────────────────────────────
 
